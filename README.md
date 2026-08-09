@@ -202,3 +202,14 @@ pre-commit hook (`git config core.hooksPath .githooks` once per clone)
 blocks payload-like or oversized files as a second line of defense. The
 DECtalk sources are community-preserved with no formal license: build and
 use privately, don't redistribute binaries.
+
+## License
+
+The scripts, Dockerfile, and documentation in this repository are
+GPL-2.0-or-later — the same license as
+[Emacspeak](https://github.com/tvraman/emacspeak) itself. The full GNU
+General Public License version 2 text is in [LICENSE](LICENSE); as with
+Emacspeak, you may use this work under version 2 or, at your option,
+any later version. What the scripts install keeps its own terms: Voxin
+is commercially licensed, and the DECtalk sources carry the caveats
+above.
