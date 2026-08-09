@@ -1,0 +1,173 @@
+#!/bin/sh
+# Install the proprietary Outloud engine (Voxin / IBM ViaVoice TTS,
+# libibmeci.so) into the persistent /opt/oralux volume, so it survives
+# container restarts and never gets baked into an image.
+#
+# From Windows:
+#   1. Copy your Voxin archive (e.g. voxin-enu-v3.3rc4.tar.gz) into .\work
+#   2. powershell -File run.ps1 -InstallOutloud
+# Or directly:
+#   docker compose run --rm -u root emacspeak install-outloud [archive-or-dir]
+#
+# Understands the Voxin 3.x installer tree natively (rfs tarballs + deb) and
+# falls back to hunting for libibmeci.so in anything else.
+
+set -e
+
+if [ "$(id -u)" != 0 ]; then
+    echo "Run me as root:  docker compose run --rm -u root emacspeak install-outloud" >&2
+    exit 1
+fi
+
+PAYLOAD="$1"
+if [ -z "$PAYLOAD" ]; then
+    for f in /home/speak/work/*voxin*.tgz /home/speak/work/*voxin*.tar.* \
+             /home/speak/work/*voxin*.zip /home/speak/work/voxin*; do
+        [ -e "$f" ] && PAYLOAD="$f" && break
+    done
+fi
+if [ -z "$PAYLOAD" ] || [ ! -e "$PAYLOAD" ]; then
+    echo "No Voxin/ViaVoice payload found." >&2
+    echo "Copy your Voxin archive into the work folder (Windows: .\\work) and rerun," >&2
+    echo "or pass a path: install-outloud /home/speak/work/your-archive.tgz" >&2
+    exit 1
+fi
+echo "Using payload: $PAYLOAD"
+
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+
+if [ -d "$PAYLOAD" ]; then
+    cp -a "$PAYLOAD/." "$WORK/"
+else
+    case "$PAYLOAD" in
+        *.zip) unzip -q "$PAYLOAD" -d "$WORK" ;;
+        *.tgz|*.tar.gz|*.tar.bz2|*.tar.xz|*.txz|*.tar) tar -xf "$PAYLOAD" -C "$WORK" ;;
+        *.rpm)
+            echo "This looks like the old 32-bit IBM ViaVoice RTK rpm. On its own it" >&2
+            echo "cannot drive emacspeak's 64-bit atcleci.so; you need Voxin from" >&2
+            echo "https://voxin.oralux.net which bridges or replaces it. Sorry." >&2
+            exit 1 ;;
+        *) echo "Don't know how to unpack $PAYLOAD" >&2; exit 1 ;;
+    esac
+fi
+
+ENVFILE=/opt/oralux/outloud.env
+VOXLIB=/opt/oralux/voxin/lib
+
+# ---------------------------------------------------------------------------
+# Voxin 3.x installer tree: replicate what voxin-installer.sh does for a
+# tarball install, but rooted in the /opt/oralux volume.
+INSTALLER=$(find "$WORK" -name "voxin-installer.sh" | head -1)
+if [ -n "$INSTALLER" ]; then
+    TREE=$(dirname "$INSTALLER")
+    ARCH=$(uname -m)
+    echo "Recognized a Voxin 3.x installer tree (arch $ARCH)."
+
+    for t in "$TREE"/packages/all/rfs_*."$ARCH".txz "$TREE"/packages/all/rfs_*.all.txz; do
+        [ -e "$t" ] || { echo "Missing expected tarball: $t" >&2; exit 1; }
+        echo "Extracting $(basename "$t") to /"
+        tar -C / --no-overwrite-dir -xf "$t"
+    done
+
+    RFS32=/opt/oralux/voxin/rfs32
+    [ -d "$RFS32" ] || { echo "No $RFS32 after rfs extraction?" >&2; exit 1; }
+
+    # ViaVoice engine ("all") first, then each voice/language tarball.
+    for t in "$TREE"/packages/all/voxin-*-all_*.txz; do
+        [ -e "$t" ] || { echo "No voxin-*-all engine tarball found" >&2; exit 1; }
+        echo "Extracting engine $(basename "$t") into rfs32"
+        tar -C "$RFS32" --no-overwrite-dir -xf "$t"
+    done
+    for t in "$TREE"/packages/all/voxin-*txz; do
+        case "$t" in *-all_*) continue ;; esac
+        echo "Extracting voice $(basename "$t") into rfs32"
+        tar -C "$RFS32" --no-overwrite-dir -xf "$t"
+    done
+
+    # Build eci.ini the way the installer's postInstViavoiceTarball does:
+    # all.ini plus one section per installed language (xxx50.so -> xxx.ini).
+    INIDIR="$RFS32/opt/IBM/ibmtts/etc"
+    NEWCONF="$RFS32/var/opt/IBM/ibmtts/cfg/eci.ini"
+    mkdir -p "$(dirname "$NEWCONF")"
+    LANGS=$(find "$RFS32/opt/IBM/ibmtts/lib" -name "???50.so" \
+            | sed "s+.*/\(...\)50.so+\1+")
+    [ -n "$LANGS" ] || { echo "No language libraries found in rfs32" >&2; exit 1; }
+    cp "$INIDIR/all.ini" "$NEWCONF"
+    for l in $LANGS; do
+        echo "Adding language: $l"
+        cat "$INIDIR/$l.ini" >> "$NEWCONF"
+    done
+
+    # libvoxin.so.1 IS the 64-bit ECI shim; Voxin's distro packages merely
+    # symlink the libibmeci.so name to it. Do the same inside the volume.
+    [ -e "$VOXLIB/libvoxin.so.1" ] || { echo "No $VOXLIB/libvoxin.so.1?" >&2; exit 1; }
+    ln -sf libvoxin.so.1 "$VOXLIB/libibmeci.so"
+    echo "Linked $VOXLIB/libibmeci.so -> libvoxin.so.1"
+
+    ECIINI="$NEWCONF"
+else
+    # -----------------------------------------------------------------------
+    # Generic fallback: unpack one level of nested archives, then hunt for
+    # libibmeci.so and copy its tree in.
+    find "$WORK" \( -name "*.tgz" -o -name "*.tar.gz" -o -name "*.tar.bz2" \
+        -o -name "*.txz" -o -name "*.tar.xz" \) | while read -r t; do
+        tar -xf "$t" -C "$(dirname "$t")" 2>/dev/null || true
+    done
+
+    LIBS=$(find "$WORK" -name "libibmeci.so*" -type f 2>/dev/null)
+    if [ -z "$LIBS" ]; then
+        echo "Could not find libibmeci.so anywhere in the payload." >&2
+        echo "Contents were:" >&2
+        find "$WORK" -maxdepth 3 | head -40 >&2
+        exit 1
+    fi
+    LIB=""
+    for cand in $LIBS; do
+        if file "$cand" | grep -q "x86-64"; then LIB="$cand"; break; fi
+    done
+    [ -z "$LIB" ] && LIB=$(echo "$LIBS" | head -1)
+    echo "Selected engine library: $LIB ($(file -b "$LIB" | cut -d, -f1-2))"
+
+    mkdir -p /opt/oralux
+    case "$LIB" in
+        */opt/oralux/*)
+            ROOT="${LIB%%/opt/oralux/*}"
+            echo "Copying $ROOT/opt/oralux -> /opt/oralux"
+            cp -a "$ROOT/opt/oralux/." /opt/oralux/
+            ;;
+        *)
+            echo "Copying $(dirname "$LIB") -> $VOXLIB"
+            mkdir -p "$VOXLIB"
+            cp -a "$(dirname "$LIB")/." "$VOXLIB/"
+            ;;
+    esac
+    ECIINI=$(find /opt/oralux -path "*cfg/eci.ini" 2>/dev/null | head -1)
+    [ -z "$ECIINI" ] && ECIINI=$(find /opt/oralux -name "eci.ini" 2>/dev/null | head -1)
+fi
+
+# ---------------------------------------------------------------------------
+{
+    echo "export LD_LIBRARY_PATH=\"$VOXLIB\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}\""
+    echo "export PATH=\"/opt/oralux/voxin/bin:\$PATH\""
+    [ -n "$ECIINI" ] && echo "export ECIINI=\"$ECIINI\""
+} > "$ENVFILE"
+chmod -R a+rX /opt/oralux
+
+echo
+echo "Installed. $ENVFILE now contains:"
+cat "$ENVFILE"
+echo
+if [ -x /opt/oralux/voxin/bin/voxin-say ]; then
+    echo "Engine self-test with voxin-say (writes a wav, no audio device needed):"
+    if LD_LIBRARY_PATH="$VOXLIB" /opt/oralux/voxin/bin/voxin-say \
+        -w /tmp/voxin-selftest.wav "Outloud engine installed" \
+        && [ -s /tmp/voxin-selftest.wav ]; then
+        echo "OK: voxin-say synthesized $(stat -c%s /tmp/voxin-selftest.wav) bytes."
+    else
+        echo "voxin-say could not synthesize; run test-speech for more detail." >&2
+    fi
+fi
+echo
+echo "Try it:   powershell -File run.ps1 -Test      (step 8 exercises Outloud)"
+echo "Run it:   powershell -File run.ps1 -Outloud"

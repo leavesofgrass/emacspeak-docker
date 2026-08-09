@@ -1,0 +1,75 @@
+#!/bin/sh
+# Step-by-step speech smoke test for the emacspeak + DECtalk container.
+# Run it inside the container:  test-speech
+# Each numbered step isolates one link in the chain, so the first step that
+# fails tells you where the problem is.
+
+# Pick up Outloud engine settings if installed.
+[ -r /opt/oralux/outloud.env ] && . /opt/oralux/outloud.env
+
+echo "== 1. Environment =="
+echo "PULSE_SERVER=$PULSE_SERVER"
+echo "DTK_PROGRAM=$DTK_PROGRAM"
+echo "EMACSPEAK_DIR=$EMACSPEAK_DIR"
+echo
+
+echo "== 2. DECtalk synthesis to a wav file (no audio device involved) =="
+rm -f /tmp/dectalk-test.wav
+/opt/dectalk/say -fo /tmp/dectalk-test.wav -a "Hello from DECtalk inside Docker."
+if [ -s /tmp/dectalk-test.wav ]; then
+    echo "OK: synthesized $(stat -c%s /tmp/dectalk-test.wav) bytes to /tmp/dectalk-test.wav"
+else
+    echo "FAIL: say produced no wav output. DECtalk itself is broken; check /opt/dectalk."
+fi
+echo
+
+echo "== 3. PulseAudio server connectivity =="
+if pactl info >/tmp/pactl.out 2>&1; then
+    head -4 /tmp/pactl.out
+    echo "OK: reached the PulseAudio server."
+else
+    cat /tmp/pactl.out
+    echo "FAIL: no PulseAudio server at PULSE_SERVER=$PULSE_SERVER."
+    echo "On Windows: is pulseaudio.exe running? Did you allow it through the firewall?"
+fi
+echo
+
+echo "== 4. Play the synthesized wav through PulseAudio =="
+if paplay /tmp/dectalk-test.wav 2>/tmp/paplay.err; then
+    echo "OK: you should have just heard DECtalk say hello."
+else
+    cat /tmp/paplay.err
+    echo "FAIL: playback failed even though synthesis worked."
+fi
+echo
+
+echo "== 5. DECtalk speaking live through the audio device =="
+/opt/dectalk/say -a "If you hear this sentence, live DECtalk audio works."
+echo
+
+echo "== 6. The emacspeak dtk-soft server itself =="
+printf 'q {The emacspeak speech server is alive.}\nd\n' | \
+    timeout 15 "$EMACSPEAK_DIR/servers/dtk-soft" 2>&1
+echo "(exit status $? -- 124 just means the 15 second timeout cut the server loop off,"
+echo " which is normal; listen for the spoken startup sentence and the queued test sentence.)"
+echo
+
+echo "== 7. ALSA-to-PulseAudio routing (the path the Outloud server uses) =="
+if aplay -q /tmp/dectalk-test.wav 2>/tmp/aplay.err; then
+    echo "OK: ALSA default device played through PulseAudio."
+else
+    cat /tmp/aplay.err
+    echo "FAIL: ALSA routing broken; Outloud audio would not work."
+fi
+echo
+
+echo "== 8. Outloud (ViaVoice / Eloquence) engine =="
+if [ -n "$(find /opt/oralux -name 'libibmeci.so*' -print 2>/dev/null | head -1)" ]; then
+    printf 'q {Outloud is alive. Eloquence speaks again.}\nd\n' | \
+        timeout 15 "$EMACSPEAK_DIR/servers/outloud" 2>&1
+    echo "(listen for the Outloud test sentence; run emacspeak with DTK_PROGRAM=outloud to use it)"
+else
+    echo "SKIP: no Outloud engine installed. This is optional; see the README's"
+    echo "Outloud section (copy your Voxin archive into work\\ and run"
+    echo "run.ps1 -InstallOutloud)."
+fi

@@ -1,0 +1,34 @@
+#!/bin/sh
+# Pre-commit guard: refuse to commit anything that looks like the proprietary
+# Voxin / ViaVoice payload, and anything suspiciously large. Second line of
+# defense behind .gitignore (which someone could -f their way past).
+#
+# Enable once per clone:  git config core.hooksPath .githooks
+
+fail=0
+
+for f in $(git diff --cached --name-only --diff-filter=A); do
+    case "$f" in
+        *voxin*.tar.*|*voxin*.tgz|*.txz|work/*)
+            case "$f" in work/.gitkeep) continue ;; esac
+            echo "BLOCKED: '$f' looks like a proprietary Voxin payload." >&2
+            fail=1 ;;
+    esac
+done
+
+# Anything over 5 MB in this repo is almost certainly a binary that doesn't
+# belong here (the whole legitimate repo is text and small scripts).
+for f in $(git diff --cached --name-only --diff-filter=AM); do
+    [ -f "$f" ] || continue
+    size=$(wc -c < "$f")
+    if [ "$size" -gt 5242880 ]; then
+        echo "BLOCKED: '$f' is ${size} bytes; no legitimate file here is that big." >&2
+        fail=1
+    fi
+done
+
+if [ "$fail" = 1 ]; then
+    echo "Commit refused. If you are CERTAIN this is right, bypass with --no-verify." >&2
+    exit 1
+fi
+exit 0

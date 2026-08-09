@@ -1,0 +1,7 @@
+build.log
+baremetal-test.log
+work/
+scripts/
+run.ps1
+README.md
+.git/

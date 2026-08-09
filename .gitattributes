@@ -1,0 +1,9 @@
+# Shell scripts and container files must stay LF: they are executed inside
+# Linux containers, and CRLF shebangs break them. PowerShell keeps CRLF.
+* text=auto
+*.sh text eol=lf
+container/* text eol=lf
+Dockerfile text eol=lf
+docker-compose.yml text eol=lf
+*.ps1 text eol=crlf
+*.md text

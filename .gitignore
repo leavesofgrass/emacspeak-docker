@@ -1,0 +1,24 @@
+# ---------------------------------------------------------------------------
+# Proprietary Voxin / IBM ViaVoice payloads. These are licensed binaries and
+# must NEVER be committed. work/ is where the install flow expects the
+# archive, and the pattern rules catch a stray copy anywhere else in the
+# tree. A pre-commit hook (.githooks/) backs this up.
+work/*
+!work/.gitkeep
+*voxin*.tar.*
+*voxin*.tgz
+*.txz
+voxin-installer*
+rfs_*.tar*
+rfs32/
+
+# ---------------------------------------------------------------------------
+# Local build and test logs
+build.log
+baremetal-test.log
+*.log
+
+# Editor and OS noise
+*~
+.DS_Store
+Thumbs.db

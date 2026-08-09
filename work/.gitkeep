@@ -1,0 +1,3 @@
+# This folder is bind-mounted into the container at /home/speak/work.
+# Drop your (private, licensed) Voxin archive here for install-outloud.
+# Everything in this folder except this file is gitignored.

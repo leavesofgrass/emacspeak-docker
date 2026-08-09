@@ -1,0 +1,29 @@
+services:
+  emacspeak:
+    build: .
+    image: emacspeak-dectalk:latest
+    hostname: emacspeak
+    environment:
+      # Speech server: outloud (IBM ViaVoice/Eloquence) is the default;
+      # dtk-soft gives software DECtalk (run.ps1 -Dectalk does this too).
+      DTK_PROGRAM: ${DTK_PROGRAM:-outloud}
+      # Where the container sends audio. Default assumes a PulseAudio server
+      # on the Windows host (see scripts/setup-audio.ps1). Override for other
+      # setups, e.g. PULSE_SERVER=unix:/mnt/wslg/PulseServer with docker-ce
+      # inside a WSL2 distro.
+      PULSE_SERVER: ${PULSE_SERVER:-tcp:host.docker.internal:4713}
+      # Lower is snappier speech, higher is safer against dropouts.
+      PULSE_LATENCY_MSEC: ${PULSE_LATENCY_MSEC:-30}
+    volumes:
+      # Your working files, visible on Windows in ./work
+      - ./work:/home/speak/work
+      # Persistent home (emacs customizations, history) across runs
+      - emacspeak-home:/home/speak
+      # Proprietary Outloud/Voxin engine, installed once by install-outloud
+      - voxin:/opt/oralux
+    stdin_open: true
+    tty: true
+
+volumes:
+  emacspeak-home:
+  voxin:

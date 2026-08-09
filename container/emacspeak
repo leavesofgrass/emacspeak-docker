@@ -1,0 +1,8 @@
+#!/bin/sh
+# Launch console Emacs with emacspeak talking through the software DECtalk.
+# DTK_PROGRAM can be overridden (dtk-soft, outloud, log-dtk-soft, ...).
+export EMACSPEAK_DIR="${EMACSPEAK_DIR:-/opt/emacspeak}"
+export DTK_PROGRAM="${DTK_PROGRAM:-dtk-soft}"
+# Outloud engine settings, if install-outloud has populated the voxin volume.
+[ -r /opt/oralux/outloud.env ] && . /opt/oralux/outloud.env
+exec emacs -nw "$@"
