@@ -109,6 +109,10 @@ This is exactly what `scripts/install-emacspeak-voxin.sh` automates:
 
     sudo ./install-emacspeak-voxin.sh voxin-enu-v3.3rc4.tar.gz --with-dectalk
 
+(The Voxin archive is optional: `--with-dectalk` alone installs a
+DECtalk-only system, no license required, and the launcher's default voice
+follows what you installed.)
+
 1. **Packages.** `git make gcc g++ tcl tcl8.6 tcl8.6-dev tclx8.4
    libasound2-dev sox libsox-fmt-all pulseaudio-utils` plus, after
    `dpkg --add-architecture i386`, the 32-bit runtime `libc6:i386

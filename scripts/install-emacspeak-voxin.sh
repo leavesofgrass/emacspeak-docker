@@ -1,12 +1,14 @@
 #!/bin/sh
 # install-emacspeak-voxin.sh
 #
-# One-shot installer: emacspeak with the Outloud (IBM ViaVoice / Eloquence)
-# speech server, driven by a Voxin 3.x archive, on a bare-metal Debian-family
-# system. Optionally also builds software DECtalk (--with-dectalk).
+# One-shot installer: emacspeak with high-quality speech on a bare-metal
+# Debian-family system. Give it a Voxin 3.x archive for the Outloud
+# (IBM ViaVoice / Eloquence) voice, --with-dectalk for software DECtalk,
+# or both.
 #
 # Usage:
 #   sudo ./install-emacspeak-voxin.sh /path/to/voxin-enu-v3.3rc4.tar.gz [options]
+#   sudo ./install-emacspeak-voxin.sh --with-dectalk        # DECtalk only, no license needed
 #
 # Options:
 #   --with-dectalk        also build the software DECtalk server (dtk-soft)
@@ -15,9 +17,9 @@
 #   --skip-deps           don't apt-get anything (you installed deps yourself)
 #   --help
 #
-# What you get: an `emacspeak` command that starts console Emacs talking with
-# Eloquence, plus (optionally) DECtalk selectable via DTK_PROGRAM=dtk-soft.
-# Every step is explained in GUIDE.md next to this script.
+# What you get: an `emacspeak` command that starts console Emacs talking —
+# with Eloquence when Voxin is installed, otherwise with DECtalk.
+# Every step is explained in GUIDE.md in this repository.
 
 set -e
 
@@ -37,7 +39,7 @@ while [ $# -gt 0 ]; do
         --emacspeak-dir) EMACSPEAK_DIR="$2"; shift ;;
         --emacspeak-ref) EMACSPEAK_REF="$2"; shift ;;
         --skip-deps)     SKIP_DEPS=yes ;;
-        --help) sed -n '2,22p' "$0"; exit 0 ;;
+        --help) sed -n '2,24p' "$0"; exit 0 ;;
         -*) die "unknown option $1" ;;
         *)  VOXIN_TGZ="$1" ;;
     esac
@@ -45,8 +47,11 @@ while [ $# -gt 0 ]; do
 done
 
 [ "$(id -u)" = 0 ] || die "run me as root (sudo)"
-[ -n "$VOXIN_TGZ" ] || die "point me at your Voxin archive: $0 /path/to/voxin-*.tar.gz"
-[ -f "$VOXIN_TGZ" ] || die "no such file: $VOXIN_TGZ"
+if [ -z "$VOXIN_TGZ" ] && [ "$WITH_DECTALK" = no ]; then
+    die "nothing to install. Give me a Voxin archive for the Eloquence voice, \
+--with-dectalk for DECtalk (no license needed), or both. --help for usage."
+fi
+[ -z "$VOXIN_TGZ" ] || [ -f "$VOXIN_TGZ" ] || die "no such file: $VOXIN_TGZ"
 
 # --------------------------------------------------------------------------
 # 1. Dependencies.
@@ -74,15 +79,17 @@ EMACS_MAJOR=$(emacs --batch --eval '(princ emacs-major-version)' 2>/dev/null || 
 Install a newer Emacs (Debian 13, backports, or build it) and rerun."
 
 # --------------------------------------------------------------------------
-# 2. Voxin. The archive is an installer tree; we do what its installer does,
-#    deterministically:
+# 2. Voxin (skipped entirely when no archive was given). The archive is an
+#    installer tree; we do what its installer does, deterministically:
 #      rfs_<arch>.txz  -> /opt/oralux/voxin/{lib,bin}   (libvoxin, voxin-say)
 #      rfs_all.txz     -> /opt/oralux/voxin/{include,rfs32}  (32-bit world)
 #      voxin-viavoice-all_*.txz -> /opt/IBM/ibmtts      (the real engine)
 #      voxin-viavoice-<lang>_*.txz -> voice libs + /var/opt/IBM voicedata
+if [ -n "$VOXIN_TGZ" ]; then
+
 log "Unpacking Voxin archive"
 STAGE=$(mktemp -d)
-trap 'rm -rf "$STAGE"' EXIT
+trap '[ -n "$STAGE" ] && rm -rf "$STAGE"' EXIT
 tar -xf "$VOXIN_TGZ" -C "$STAGE"
 INSTALLER=$(find "$STAGE" -name voxin-installer.sh | head -1)
 [ -n "$INSTALLER" ] || die "this doesn't look like a Voxin 3.x archive (no voxin-installer.sh)"
@@ -149,6 +156,8 @@ ECIINI="$NEWCONF" voxin-say -w /tmp/voxin-selftest.wav "Voxin is installed." \
 Check that /opt/IBM/ibmtts/lib/libibmeci.so exists."
 echo "  OK: $(stat -c%s /tmp/voxin-selftest.wav) bytes of speech"
 
+fi # end of Voxin section
+
 # --------------------------------------------------------------------------
 # 3. Emacspeak, run in place from $EMACSPEAK_DIR (no `make install` needed).
 if [ -d "$EMACSPEAK_DIR/.git" ]; then
@@ -203,30 +212,33 @@ if [ "$WITH_DECTALK" = yes ]; then
 fi
 
 # --------------------------------------------------------------------------
-# 5. Launcher.
-log "Installing /usr/local/bin/emacspeak launcher"
+# 5. Launcher. Default voice: Eloquence when Voxin is installed, else DECtalk.
+if [ -n "$VOXIN_TGZ" ]; then DEFAULT_TTS=outloud; else DEFAULT_TTS=dtk-soft; fi
+log "Installing /usr/local/bin/emacspeak launcher (default voice: $DEFAULT_TTS)"
 cat > /usr/local/bin/emacspeak <<LAUNCHER
 #!/bin/sh
 # Console Emacs with emacspeak. DTK_PROGRAM selects the speech server:
-# outloud (Eloquence, default) or dtk-soft (software DECtalk).
+# outloud (Eloquence) or dtk-soft (software DECtalk).
 export EMACSPEAK_DIR="$EMACSPEAK_DIR"
-export DTK_PROGRAM="\${DTK_PROGRAM:-outloud}"
+export DTK_PROGRAM="\${DTK_PROGRAM:-$DEFAULT_TTS}"
 export ECIINI="\${ECIINI:-/var/opt/IBM/ibmtts/cfg/eci.ini}"
 exec emacs -nw -l "$EMACSPEAK_DIR/lisp/emacspeak-setup.el" "\$@"
 LAUNCHER
 chmod 0755 /usr/local/bin/emacspeak
 
 log "All done"
+echo
+echo "  Start it:            emacspeak      (default voice: $DEFAULT_TTS)"
+[ "$WITH_DECTALK" = yes ] && [ -n "$VOXIN_TGZ" ] && \
+    echo "  DECtalk instead:     DTK_PROGRAM=dtk-soft emacspeak"
+[ -n "$VOXIN_TGZ" ] && \
+    echo "  Engine self-test:    voxin-say -w /tmp/t.wav \"hello\""
 cat <<DONE
-
-  Start it:            emacspeak
-  DECtalk instead:     DTK_PROGRAM=dtk-soft emacspeak   (if --with-dectalk)
-  Engine self-test:    voxin-say -w /tmp/t.wav "hello"
 
   To load emacspeak in your own Emacs config instead of the launcher, put
   this FIRST in ~/.emacs (before anything that produces output):
 
-    (setenv "DTK_PROGRAM" "outloud")
+    (setenv "DTK_PROGRAM" "$DEFAULT_TTS")
     (load-file "$EMACSPEAK_DIR/lisp/emacspeak-setup.el")
 
 DONE

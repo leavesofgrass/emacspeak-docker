@@ -1,230 +1,167 @@
-# Emacspeak + software DECtalk in Docker
+# Emacspeak with real speech
 
-A Debian container that runs [emacspeak](https://github.com/tvraman/emacspeak)
-with a working **software DECtalk** speech server — the classic Perfect Paul
-voice, not espeak — with audio delivered to your Windows speakers.
+Give [emacspeak](https://github.com/tvraman/emacspeak) — the complete audio
+desktop for Emacs — a voice worth listening to. One script (or one Docker
+container) sets up emacspeak with **IBM ViaVoice / Eloquence** ("Outloud",
+via [Voxin](https://voxin.oralux.net)) and **software DECtalk**: the two
+classic synthesizers many blind users grew up on, instead of espeak.
 
-How the pieces fit together:
+If you have a Debian-family Linux system, you are three commands away from
+a talking Emacs. If you're on Windows or prefer containers, the Docker
+route gives you the same thing. Either way, every step is documented — see
+[GUIDE.md](GUIDE.md) for how all the pieces actually work.
 
-- **DECtalk** is built from the community-preserved sources at
-  [github.com/dectalk/dectalk](https://github.com/dectalk/dectalk) (`develop`
-  branch), installed in the container at `/opt/dectalk` (libraries,
-  dictionaries, the `say` command, and `DECtalk.conf`).
-- **Emacspeak** (git master) lives at `/opt/emacspeak`. Its `dtk-soft` speech
-  server is a Tcl script that loads `tcldtk.so`, a small C extension compiled
-  against DECtalk's `libtts` — this is the part that always needed the
-  "enough symlinking" ritual, and the Dockerfile now does it reproducibly.
-- **Audio** leaves the container over the PulseAudio network protocol to a
-  tiny PulseAudio server running on Windows
-  ([pulseaudio-win32](https://github.com/pgaskin/pulseaudio-win32)), which
-  plays it through your default sound device. Everything emacspeak plays —
-  DECtalk speech, auditory icons (`paplay`), and tones (`sox`) — takes the
-  same path.
+## Quick start on Linux (Debian, Ubuntu, and friends)
 
-## Quick start
+**What you need:**
 
-All commands are run in PowerShell from this folder (`D:\emacspeak-docker`).
+- A Debian-family system whose Emacs is version 29.1 or newer — Debian 13
+  and Ubuntu 24.04 or later are fine. (The installer checks and tells you
+  if yours is too old.)
+- For the Eloquence voice: your licensed Voxin archive, about 15 EUR from
+  [voxin.oralux.net](https://voxin.oralux.net) — a file like
+  `voxin-enu-v3.3rc4.tar.gz`. **No Voxin? Skip it.** DECtalk needs no
+  license and sounds like 1985 in the best way.
 
-Step 1 — set up audio on Windows (one time). This downloads the ~9 MB
-pulseaudio-win32 v5 release from GitHub, configures it to accept audio from
-Docker, starts it, and registers it to start at logon:
+**Install** (pick the line that matches what you have):
+
+```bash
+git clone https://github.com/leavesofgrass/emacspeak-docker
+cd emacspeak-docker
+
+# Both voices (Voxin archive + DECtalk):
+sudo ./scripts/install-emacspeak-voxin.sh ~/voxin-enu-v3.3rc4.tar.gz --with-dectalk
+
+# DECtalk only — free, no archive needed:
+sudo ./scripts/install-emacspeak-voxin.sh --with-dectalk
+
+# Eloquence only:
+sudo ./scripts/install-emacspeak-voxin.sh ~/voxin-enu-v3.3rc4.tar.gz
+```
+
+The script narrates each step, self-tests the speech engines before it
+finishes, and fails loudly at the exact step that broke — so if anything
+goes wrong, the last message on screen is the problem statement.
+
+**Run it:**
+
+```bash
+emacspeak
+```
+
+That's a talking console Emacs. `C-e` is the emacspeak prefix (`C-e t`
+speaks the time; `C-h C-e` lists everything). The default voice is
+Eloquence when Voxin is installed, DECtalk otherwise; switch per-session
+with `DTK_PROGRAM=dtk-soft emacspeak` or `DTK_PROGRAM=outloud emacspeak`.
+
+To load emacspeak inside your own Emacs configuration instead of the
+launcher, put this at the very top of `~/.emacs`:
+
+```
+(setenv "DTK_PROGRAM" "outloud")
+(load-file "/opt/emacspeak/lisp/emacspeak-setup.el")
+```
+
+## Quick start with Docker
+
+Use this on Windows, or anywhere you'd rather keep the whole stack in a
+container. The container holds emacspeak, DECtalk, and (after a one-time
+step) your Voxin engine; audio streams to a PulseAudio server on the host.
+
+On **Windows** (Docker Desktop with the WSL2 backend):
+
+1. Set up host audio — downloads the small
+   [pulseaudio-win32](https://github.com/pgaskin/pulseaudio-win32) server,
+   starts it, and registers it to start at logon. Allow it through the
+   firewall when Windows asks:
 
 ```bash
 powershell -ExecutionPolicy Bypass -File scripts\setup-audio.ps1 -AutoStart
 ```
 
-When Windows Firewall asks about `pulseaudio.exe`, allow it (private networks
-is enough). Without the firewall approval the container's audio cannot reach
-Windows.
-
-Step 2 — build the image (10–20 minutes the first time):
+2. Build the image (10–20 minutes the first time):
 
 ```bash
 docker compose build
 ```
 
-Step 3 — verify the whole speech chain:
-
-```bash
-powershell -ExecutionPolicy Bypass -File run.ps1 -Test
-```
-
-You should hear DECtalk speak twice, and the test prints a numbered
-pass/fail report for each link in the chain.
-
-Step 4 — run emacspeak:
-
-```bash
-powershell -ExecutionPolicy Bypass -File run.ps1
-```
-
-That starts console Emacs with emacspeak loaded and talking through DECtalk.
-`C-e` is the emacspeak prefix. Your files in `.\work` appear in the container
-at `~/work`, and your home directory (customizations, history) persists in a
-Docker volume across runs.
-
-## Daily driving
-
-| Task | Command |
-|------|---------|
-| Start emacspeak (Outloud, the default) | `powershell -File run.ps1` or `docker compose run --rm emacspeak` |
-| Start emacspeak (DECtalk) | `powershell -File run.ps1 -Dectalk` |
-| Speech smoke test | `powershell -File run.ps1 -Test` |
-| Shell in the container | `powershell -File run.ps1 -Shell` |
-| Install Outloud engine | copy Voxin archive to `.\work`, then `powershell -File run.ps1 -InstallOutloud` |
-| Rebuild after upstream changes | `docker compose build --no-cache` |
-| Stop the Windows audio server | `powershell -File scripts\setup-audio.ps1 -Stop` |
-
-A few emacspeak keys as a refresher: `C-e l` speak the current line,
-`C-e d r` set speech rate, `C-e d p` set punctuation mode; the full command
-help is at `C-h C-e`. DECtalk inline commands work as they always did — try
-`M-x dtk-add-cleanup-pattern`, or just evaluate
-`(dtk-speak "[:nb] Betty says hello")`.
-
-## The Outloud (IBM ViaVoice / Eloquence) server
-
-The image also ships everything emacspeak needs for its `outloud` server —
-the compiled `atcleci.so` glue, ALSA routed to PulseAudio, and 32-bit
-runtime libraries for engine builds that need them. The one piece that
-cannot be included is the engine itself: `libibmeci.so` is proprietary IBM
-code, sold today as **Voxin** (about 15 EUR) at
-[voxin.oralux.net](https://voxin.oralux.net). The old 32-bit ViaVoice RTK
-rpms alone won't drive the 64-bit glue; Voxin is the supported route.
-
-To install it (once — it lives in a Docker volume, surviving rebuilds and
-`--rm`):
-
-1. Copy your Voxin archive (e.g. `voxin-installer-3.x.tgz`) into `.\work`.
-2. Run:
+3. If you have Voxin: copy the archive into `.\work`, then install it into
+   a persistent volume (survives rebuilds; never enters the image):
 
 ```bash
 powershell -ExecutionPolicy Bypass -File run.ps1 -InstallOutloud
 ```
 
-3. Verify (step 8 of the smoke test exercises Outloud):
+4. Test, then run:
 
 ```bash
 powershell -ExecutionPolicy Bypass -File run.ps1 -Test
 ```
 
-4. Run emacspeak with the ViaVoice voice:
-
 ```bash
-powershell -ExecutionPolicy Bypass -File run.ps1 -Outloud
+powershell -ExecutionPolicy Bypass -File run.ps1
 ```
 
-The installer understands the Voxin 3.x tree natively: it extracts the rfs
-tarballs and the ViaVoice engine/voice archives into the `voxin` volume,
-generates `eci.ini`, links `libibmeci.so` to the libvoxin shim, and writes
-`/opt/oralux/outloud.env` (library path + `ECIINI`), which the launchers
-source. The image carries `/opt/IBM` and `/var/opt/IBM` symlinks pointing
-into the volume, because libvoxin probes those exact absolute paths for the
-engine. Outloud is the default voice (`DTK_PROGRAM: outloud` in
-`docker-compose.yml`); switch back to DECtalk per-session with
-`run.ps1 -Dectalk`, or permanently by setting `DTK_PROGRAM: dtk-soft`.
+`run.ps1` starts emacspeak with Eloquence; `-Dectalk` switches voice,
+`-Shell` gives a bash shell, `-Test` runs the speech smoke test. Your
+files live in `.\work` (mounted at `~/work` in the container) and your
+home directory persists in a volume.
 
-Outloud troubleshooting, should it ever go quiet: from `run.ps1 -Shell`,
-run `voxin-say -w /tmp/t.wav "hello"` — a non-empty wav means the engine
-itself is fine (a zero-byte wav with exit 0 is libvoxin's way of saying it
-could not find or start the engine). `touch ~/libvoxin.ok` before running
-makes libvoxin write debug logs to `/tmp/libvoxin.log.<pid>`.
+On a **Linux host**, the same compose file works with your desktop's
+PulseAudio/PipeWire socket instead of the Windows server — set
+`PULSE_SERVER=unix:/run/user/1000/pulse/native` (or the WSLg socket
+`unix:/mnt/wslg/PulseServer` under docker-ce in WSL2) and bind-mount the
+socket path in `docker-compose.yml`.
 
-## Configuration knobs
+## Verifying and troubleshooting
 
-- **Speech server**: `docker-compose.yml` sets `DTK_PROGRAM=outloud`
-  (Eloquence) as the default; `run.ps1 -Dectalk` or
-  `DTK_PROGRAM=dtk-soft` gives software DECtalk. The `log-dtk-soft` and
-  `log-outloud` variants log the server protocol to a file for debugging.
-- **Latency**: `PULSE_LATENCY_MSEC` in `docker-compose.yml`, default 30.
-  Raise it if audio stutters; lower it if speech feels laggy.
-- **Version pinning**: `docker compose build` accepts
-  `--build-arg DECTALK_REF=<ref>` and `--build-arg EMACSPEAK_REF=<ref>`
-  (tag, branch, or commit) if you want reproducible builds rather than
-  tracking `develop`/`master`.
-- **Audio endpoint**: `PULSE_SERVER` env var, default
-  `tcp:host.docker.internal:4713`. If you ever move this setup to Linux or
-  to docker-ce inside a WSL2 distro, set
-  `PULSE_SERVER=unix:/mnt/wslg/PulseServer` and bind-mount `/mnt/wslg`
-  instead — no Windows-side server needed there.
+Test the layers from the bottom up; the first one that fails is the
+problem:
 
-## Troubleshooting
+1. **Engine**: `voxin-say -w /tmp/t.wav "hello"` and/or
+   `/opt/dectalk/say -fo /tmp/t.wav -a "hello"` must write a non-empty
+   wav. No sound card needed. A **zero-byte wav with exit 0** from
+   voxin-say means libvoxin can't find the engine at `/opt/IBM` — see the
+   gotcha list in [GUIDE.md](GUIDE.md).
+2. **Audio device**: `paplay /tmp/t.wav` (or `aplay`) must be audible.
+   In Docker on Windows: is `pulseaudio.exe` running, and allowed through
+   the firewall?
+3. **Speech server**: `export EMACSPEAK_DIR=/opt/emacspeak`, then
+   `printf 'q {test}\nd\n' | /opt/emacspeak/servers/outloud` (or
+   `servers/dtk-soft`) must speak.
+4. **Emacs**: `emacspeak` must talk from the first message.
 
-Run the smoke test first; it isolates the failing link:
+In the container, `test-speech` runs all of these as a numbered report
+(`run.ps1 -Test` from Windows). If speech is delayed or choppy over the
+Docker/Windows path, raise `PULSE_LATENCY_MSEC` in `docker-compose.yml`;
+if it feels laggy, lower it.
 
-```bash
-powershell -ExecutionPolicy Bypass -File run.ps1 -Test
-```
+## How it all works
 
-- **Step 2 fails (no wav produced)** — DECtalk itself is broken in the
-  image; rebuild, and check `build.log`. This should not happen on a
-  successful build.
-- **Step 3 fails (no PulseAudio server)** — the Windows side is the
-  problem. Check that `pulseaudio.exe` is running (`Get-Process pulseaudio`),
-  re-run `scripts\setup-audio.ps1`, and check the firewall: it must be
-  allowed on the network profile of the WSL/Docker adapter. A quick manual
-  check from PowerShell: `Test-NetConnection localhost -Port 4713`.
-- **Steps pass but no sound is audible** — check the Windows default output
-  device and the per-app volume mixer (pulseaudio shows up as its own app).
-- **Speech is delayed or choppy** — tune `PULSE_LATENCY_MSEC` (see above).
-- **Emacspeak starts silent** — inside the container run
-  `test-speech`; also try `DTK_PROGRAM=log-dtk-soft emacspeak`, then read
-  the log it names to see the server conversation.
+[GUIDE.md](GUIDE.md) is the full write-up: the emacspeak speech-server
+protocol, what atcleci/libvoxin/voxind actually do, why voxind is a
+self-contained 32-bit world, DECtalk's configuration search order, the
+anatomy of a Voxin archive, and every trap we hit so you don't have to.
+If you've ever wondered why this setup defeated so many attempts over the
+years — that document is the answer.
 
-## Beyond Docker: bare metal, and how all this actually works
+## Repository layout
 
-[GUIDE.md](GUIDE.md) is the full write-up: the architecture of every layer
-(emacspeak's server protocol, atcleci, libvoxin/voxind, DECtalk's conf
-search), the anatomy of a Voxin archive, a step-by-step bare-metal install
-with the reason for each step, the Docker-specific adaptations, and every
-gotcha we hit while getting here.
+- `scripts/install-emacspeak-voxin.sh` — bare-metal installer (see above)
+- `scripts/setup-audio.ps1` — Windows host audio (PulseAudio) setup
+- `Dockerfile`, `docker-compose.yml` — the container route
+- `container/` — files baked into the image: launcher, `test-speech`,
+  `install-outloud`, Emacs init
+- `run.ps1` — Windows convenience launcher
+- `GUIDE.md` — the deep dive
+- `work/` — your files; also where Voxin archives go (gitignored)
 
-[scripts/install-emacspeak-voxin.sh](scripts/install-emacspeak-voxin.sh)
-automates the bare-metal path on a Debian-family system — tested on a fresh
-Debian 13:
+## Licensing, and keeping the proprietary payload out
 
-```bash
-sudo ./install-emacspeak-voxin.sh /path/to/voxin-enu-v3.3rc4.tar.gz --with-dectalk
-```
-
-## What's in this folder
-
-- `Dockerfile` — two stages: DECtalk built on Debian bookworm (older gcc is
-  kinder to 1990s C), final image on Debian trixie with Emacs 30, Tcl/TclX,
-  emacspeak from git, and the compiled `tcldtk.so`.
-- `docker-compose.yml` — run configuration: audio env vars, `./work` bind
-  mount, persistent home volume.
-- `container/` — files baked into the image: the `emacspeak` launcher,
-  `test-speech`, `install-outloud`, and the Emacs `init.el` that loads
-  emacspeak.
-- `scripts/setup-audio.ps1` — Windows-side PulseAudio install/start/stop.
-- `run.ps1` — convenience launcher (`-Test`, `-Shell`).
-
-## Making this repo public
-
-The repository is set up so the licensed Voxin/ViaVoice payload can never
-be committed by accident:
-
-- `.gitignore` excludes everything in `work/` plus any file matching the
-  Voxin archive patterns (`*voxin*.tar.*`, `*.txz`, `rfs_*`), anywhere in
-  the tree.
-- `.githooks/pre-commit` is a second line of defense: it refuses to commit
-  payload-pattern files or anything over 5 MB (nothing legitimate in this
-  repo is that large). Enable it once per clone with:
-
-```bash
-git config core.hooksPath .githooks
-```
-
-Because these protections existed before the first commit, the history is
-clean by construction — nothing to scrub before publishing. Keep the Voxin
-archive itself in a private repo, as you do now, and hand people the
-`install-outloud` / `install-emacspeak-voxin.sh` flow to combine the
-public recipe with their own licensed copy.
-
-## Notes on the DECtalk sources
-
-The DECtalk code was shared publicly by its original developer in 2015 and
-is community-maintained at github.com/dectalk/dectalk; it has no formal
-open-source license. Building and using it privately, as this setup does, is
-the community norm, but don't publish the built image to a public registry.
-Emacspeak is GPL-2.0+.
+Emacspeak is GPL-2.0+. The Voxin/ViaVoice engine is commercial — **bring
+your own licensed archive**; it is never part of this repository or any
+image built from it. `.gitignore` excludes the payload patterns, and a
+pre-commit hook (`git config core.hooksPath .githooks` once per clone)
+blocks payload-like or oversized files as a second line of defense. The
+DECtalk sources are community-preserved with no formal license: build and
+use privately, don't redistribute binaries.
