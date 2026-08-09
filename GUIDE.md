@@ -111,7 +111,12 @@ This is exactly what `scripts/install-emacspeak-voxin.sh` automates:
 
 (The Voxin archive is optional: `--with-dectalk` alone installs a
 DECtalk-only system, no license required, and the launcher's default voice
-follows what you installed.)
+follows what you installed. The script detects Debian, Arch, and Fedora
+families from `/etc/os-release` and adapts: package manager, TclX built
+from source where unpackaged (Arch, Fedora), a private Tcl 8.6 where the
+distro ships Tcl 9 (Fedora), the `[multilib]` repository enabled for
+Voxin's 32-bit engine (Arch), and the shim symlink placed in the family's
+trusted libdir.)
 
 1. **Packages.** `git make gcc g++ tcl tcl8.6 tcl8.6-dev tclx8.4
    libasound2-dev sox libsox-fmt-all pulseaudio-utils` plus, after
@@ -234,6 +239,23 @@ adaptations:
    setenvs it at startup — and the installed launcher exports it too, but
    when driving `dtk-soft` by hand at a shell, `export
    EMACSPEAK_DIR=/opt/emacspeak` first or it dies on line one.
+9. **Tcl 9 breaks the whole stack.** Distros that moved `tcl` to 9.x
+   (Fedora did) can't run stock emacspeak servers at all: TclX doesn't
+   compile against Tcl 9 (`TCL_PARSE_PART1` is gone), `atcleci.cpp`
+   doesn't either (the `CONST` macro changed), and Fedora's packaged
+   tclx doesn't even load in its own tclsh 9. Since emacspeak launches
+   servers through their `#!/usr/bin/tclsh` shebang, the fix is a private
+   Tcl 8.6 (the installer builds one under `/opt/emacspeak-tcl`) with the
+   server shebangs rewritten to point at it.
+10. **tclsh lies about errors on stdin.** `echo 'package require Tclx' |
+    tclsh` exits 0 even when the package is missing — errors on
+    stdin-fed commands don't set the exit status. Any scripted probe
+    must use an explicit `exit`:
+    `echo 'if {[catch {package require Tclx}]} {exit 1}' | tclsh`.
+11. **64-bit `dlopen` search paths differ by family.** Fedora's trusted
+    libdir is `/usr/lib64`; Debian's and Arch's is `/usr/lib`. The
+    `libibmeci.so` shim symlink has to land in the right one or Outloud
+    silently fails to load the engine.
 
 ## Verifying an install, layer by layer
 

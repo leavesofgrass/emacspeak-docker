@@ -8,11 +8,13 @@ classic synthesizers many blind users grew up on, instead of espeak.
 
 **Pick your path:**
 
-- **Debian-family Linux** (Debian, Ubuntu, Mint...): run one script —
-  see "Quick start on Linux" below. Fastest route.
-- **Any other Linux** (Fedora, Arch, openSUSE...): same script with
-  `--skip-deps` after installing the equivalents of a short package list,
-  or use Docker. See the note at the end of the Linux section.
+- **Debian, Arch, or Fedora family Linux** (Debian, Ubuntu, Mint, Arch,
+  CachyOS, EndeavourOS, Manjaro, Fedora...): run one script — see "Quick
+  start on Linux" below. The installer detects your distribution and uses
+  apt, pacman, or dnf accordingly. Fastest route.
+- **Any other Linux**: same script with `--skip-deps` after installing
+  the equivalents of a short package list, or use Docker. See the note at
+  the end of the Linux section.
 - **macOS or Windows**: use Docker — see "Quick start with Docker". The
   Voxin engine is Linux-only binary code, so on a Mac it runs happily
   *inside* the Linux container but can never run bare-metal. (Mac users
@@ -22,13 +24,14 @@ classic synthesizers many blind users grew up on, instead of espeak.
 Every step of all of this is documented — see [GUIDE.md](GUIDE.md) for
 how the pieces actually work.
 
-## Quick start on Linux (Debian, Ubuntu, and friends)
+## Quick start on Linux
 
 **What you need:**
 
-- A Debian-family system whose Emacs is version 29.1 or newer — Debian 13
-  and Ubuntu 24.04 or later are fine. (The installer checks and tells you
-  if yours is too old.)
+- A Debian-, Arch-, or Fedora-family system whose Emacs is version 29.1
+  or newer — Debian 13, Ubuntu 24.04+, current Arch/CachyOS, and current
+  Fedora are all fine. (The installer checks and tells you if yours is
+  too old.)
 - For the Eloquence voice: your licensed Voxin archive, about 15 EUR from
   [voxin.oralux.net](https://voxin.oralux.net) — a file like
   `voxin-enu-v3.3rc4.tar.gz`. **No Voxin? Skip it.** DECtalk needs no
@@ -73,17 +76,21 @@ launcher, put this at the very top of `~/.emacs`:
 (load-file "/opt/emacspeak/lisp/emacspeak-setup.el")
 ```
 
-**Not on a Debian-family distro?** The script's only Debian-specific part
-is `apt-get`. Install your distro's equivalents of: Emacs 29+, git, gcc
-and g++, make, Tcl 8.6 with headers, TclX, ALSA headers (alsa-lib devel),
-sox, pulseaudio-utils, and 32-bit glibc/libstdc++ runtime (for Voxin's
-engine process) — then rerun with `--skip-deps`:
+**Distribution notes.** The installer detects your family from
+`/etc/os-release` and handles the differences itself:
 
-```bash
-sudo ./scripts/install-emacspeak-voxin.sh --skip-deps ~/voxin-enu-v3.3rc4.tar.gz --with-dectalk
-```
-
-Everything after the package step is distro-independent.
+- **Arch family** (Arch, CachyOS, EndeavourOS, Manjaro): TclX isn't in
+  the repos, so the script builds it from source; installing Voxin
+  enables the `[multilib]` repository if it isn't already (its engine
+  needs 32-bit glibc).
+- **Fedora family**: Fedora ships Tcl 9, which emacspeak's speech servers
+  cannot use, so the script builds a private Tcl 8.6 (plus TclX) under
+  `/opt/emacspeak-tcl` and points the servers at it. Automatic, but
+  that's why the Fedora install takes a few minutes longer.
+- **Anything else**: install the equivalents of Emacs 29+, git, gcc/g++,
+  make, Tcl 8.6 with headers, TclX, ALSA headers, sox, pulseaudio-utils,
+  and 32-bit glibc/libstdc++ (for Voxin), then rerun with `--skip-deps`.
+  Everything after the package step is distro-independent.
 
 ## Quick start with Docker (Windows, macOS, or any Linux)
 

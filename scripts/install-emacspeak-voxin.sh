@@ -1,10 +1,15 @@
 #!/bin/sh
 # install-emacspeak-voxin.sh
 #
-# One-shot installer: emacspeak with high-quality speech on a bare-metal
-# Debian-family system. Give it a Voxin 3.x archive for the Outloud
-# (IBM ViaVoice / Eloquence) voice, --with-dectalk for software DECtalk,
-# or both.
+# One-shot installer: emacspeak with high-quality speech on bare-metal
+# Linux. Give it a Voxin 3.x archive for the Outloud (IBM ViaVoice /
+# Eloquence) voice, --with-dectalk for software DECtalk, or both.
+#
+# Supported distribution families (auto-detected from /etc/os-release):
+#   - Debian family:  Debian, Ubuntu, Mint, ...          (apt)
+#   - Arch family:    Arch, CachyOS, EndeavourOS, ...    (pacman)
+#   - Fedora family:  Fedora, and dnf-based relatives    (dnf)
+# Anything else: install the dependencies yourself, rerun with --skip-deps.
 #
 # Usage:
 #   sudo ./install-emacspeak-voxin.sh /path/to/voxin-enu-v3.3rc4.tar.gz [options]
@@ -14,7 +19,7 @@
 #   --with-dectalk        also build the software DECtalk server (dtk-soft)
 #   --emacspeak-dir DIR   where emacspeak lives          (default /opt/emacspeak)
 #   --emacspeak-ref REF   emacspeak git branch/tag       (default master)
-#   --skip-deps           don't apt-get anything (you installed deps yourself)
+#   --skip-deps           don't install packages (you installed them yourself)
 #   --help
 #
 # What you get: an `emacspeak` command that starts console Emacs talking —
@@ -30,6 +35,13 @@ DECTALK_REF=develop
 WITH_DECTALK=no
 SKIP_DEPS=no
 
+# Emacspeak's servers and glue need Tcl 8.6: Tcl 9 removed APIs that both
+# TclX and emacspeak's C glue still use. Where the distro has moved to
+# Tcl 9 (Fedora), we build a private 8.6 here and point the servers at it.
+PRIVATE_TCL=/opt/emacspeak-tcl
+TCL86_URL=https://github.com/tcltk/tcl/archive/refs/tags/core-8-6-16.tar.gz
+TCLX_URL=https://github.com/flightaware/tclx
+
 log() { printf '\n==> %s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
@@ -39,7 +51,7 @@ while [ $# -gt 0 ]; do
         --emacspeak-dir) EMACSPEAK_DIR="$2"; shift ;;
         --emacspeak-ref) EMACSPEAK_REF="$2"; shift ;;
         --skip-deps)     SKIP_DEPS=yes ;;
-        --help) sed -n '2,24p' "$0"; exit 0 ;;
+        --help) sed -n '2,28p' "$0"; exit 0 ;;
         -*) die "unknown option $1" ;;
         *)  VOXIN_TGZ="$1" ;;
     esac
@@ -54,32 +66,150 @@ fi
 [ -z "$VOXIN_TGZ" ] || [ -f "$VOXIN_TGZ" ] || die "no such file: $VOXIN_TGZ"
 
 # --------------------------------------------------------------------------
+# 0. Which distribution family is this?
+FAMILY=unknown
+if [ -r /etc/os-release ]; then
+    . /etc/os-release
+    for candidate in "$ID" $ID_LIKE; do
+        case "$candidate" in
+            debian|ubuntu) FAMILY=debian; break ;;
+            arch)          FAMILY=arch;   break ;;
+            fedora|rhel)   FAMILY=fedora; break ;;
+        esac
+    done
+fi
+log "Distribution family: $FAMILY (ID=${ID:-?} ID_LIKE=${ID_LIKE:-})"
+if [ "$FAMILY" = unknown ] && [ "$SKIP_DEPS" = no ]; then
+    die "unrecognized distribution. Install the dependencies listed in the \
+README yourself, then rerun with --skip-deps."
+fi
+
+# Where 64-bit dlopen looks for libraries by default differs by family.
+case "$FAMILY" in
+    fedora) SYS_LIBDIR=/usr/lib64 ;;
+    *)      SYS_LIBDIR=/usr/lib ;;
+esac
+
+# --------------------------------------------------------------------------
 # 1. Dependencies.
-#    i386 runtime libs are for Voxin's 32-bit voxind engine process.
-#    tclx8.4 is the TclX extension every emacspeak speech server requires.
-#    tcl8.6-dev + g++ + libasound2-dev compile atcleci.so, the Tcl<->ECI glue.
-if [ "$SKIP_DEPS" = no ]; then
-    command -v apt-get >/dev/null || \
-        die "no apt-get here; install equivalents yourself and rerun with --skip-deps"
-    log "Installing packages"
+#    The 32-bit runtime is for Voxin's voxind engine process; TclX is the
+#    Tcl extension every emacspeak speech server requires; the Tcl headers
+#    plus g++ and ALSA headers compile atcleci.so, the Tcl<->ECI glue.
+install_deps_debian() {
     dpkg --add-architecture i386
     apt-get update
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        git ca-certificates make gcc g++ file unzip xz-utils \
+        git ca-certificates curl make gcc g++ file unzip xz-utils \
         tcl tcl8.6 tcl8.6-dev tclx8.4 \
         libasound2-dev sox libsox-fmt-all pulseaudio-utils \
         libc6:i386 libstdc++6:i386
     command -v emacs >/dev/null || \
         DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends emacs-nox
+    [ "$WITH_DECTALK" = yes ] && DEBIAN_FRONTEND=noninteractive \
+        apt-get install -y --no-install-recommends \
+        build-essential autoconf automake libpulse-dev
+    return 0
+}
+
+install_deps_arch() {
+    # Voxin's 32-bit engine needs the multilib repo for lib32 glibc.
+    if [ -n "$VOXIN_TGZ" ] && ! grep -q '^\[multilib\]' /etc/pacman.conf; then
+        log "Enabling the [multilib] repository (needed for Voxin's 32-bit engine)"
+        # Uncomment the standard commented block if present...
+        sed -i '/^#\[multilib\]/,/^#Include = \/etc\/pacman.d\/mirrorlist/ s/^#//' \
+            /etc/pacman.conf
+        # ...or append the section when the config doesn't carry it at all.
+        if ! grep -q '^\[multilib\]' /etc/pacman.conf; then
+            printf '\n[multilib]\nInclude = /etc/pacman.d/mirrorlist\n' \
+                >> /etc/pacman.conf
+        fi
+    fi
+    pacman -Sy --noconfirm --needed \
+        git curl make gcc file unzip xz autoconf automake pkgconf \
+        tcl alsa-lib sox libpulse
+    command -v emacs >/dev/null || pacman -S --noconfirm --needed emacs-nox
+    [ -n "$VOXIN_TGZ" ] && pacman -S --noconfirm --needed lib32-glibc lib32-gcc-libs
+    return 0
+}
+
+install_deps_fedora() {
+    # Note: no distro tcl here on purpose -- Fedora ships Tcl 9, which
+    # emacspeak's stack cannot use; we build a private Tcl 8.6 below.
+    dnf install -y \
+        git curl make gcc gcc-c++ file unzip xz autoconf automake \
+        pkgconf-pkg-config alsa-lib-devel sox pulseaudio-utils
+    command -v emacs >/dev/null || dnf install -y emacs
+    [ -n "$VOXIN_TGZ" ] && dnf install -y glibc.i686 libstdc++.i686
+    [ "$WITH_DECTALK" = yes ] && dnf install -y pulseaudio-libs-devel
+    return 0
+}
+
+if [ "$SKIP_DEPS" = no ]; then
+    log "Installing packages ($FAMILY)"
+    "install_deps_$FAMILY"
 fi
 
 EMACS_MAJOR=$(emacs --batch --eval '(princ emacs-major-version)' 2>/dev/null || echo 0)
 [ "$EMACS_MAJOR" -ge 29 ] || \
     die "emacspeak needs Emacs 29.1+, found major version '$EMACS_MAJOR'. \
-Install a newer Emacs (Debian 13, backports, or build it) and rerun."
+Install a newer Emacs and rerun."
 
 # --------------------------------------------------------------------------
-# 2. Voxin (skipped entirely when no archive was given). The archive is an
+# 2. A usable Tcl 8.6 + TclX.
+#    - Debian: everything comes from apt (tcl8.6, tclx8.4). Done.
+#    - Arch: tcl is 8.6 but TclX isn't packaged; build TclX from source.
+#    - Fedora: distro tcl is 9.x; build private Tcl 8.6 AND TclX from
+#      source, and later point the emacspeak servers' shebangs at it.
+TCLSH=/usr/bin/tclsh
+TCL_CFLAGS="-I/usr/include/tcl8.6"
+TCL_LIBS="-ltcl8.6"
+
+# Note the explicit exit: tclsh reading stdin reports errors but still
+# exits 0, so a bare "package require Tclx" pipe always looks successful.
+has_tclx() {
+    echo 'if {[catch {package require Tclx}]} {exit 1}' | "$TCLSH" >/dev/null 2>&1
+}
+
+build_tclx() { # $1 = tclConfig.sh dir, $2 = install prefix
+    log "Building TclX from source ($TCLX_URL)"
+    TCLXSRC=$(mktemp -d)
+    git clone -q --depth 1 "$TCLX_URL" "$TCLXSRC/tclx"
+    ( cd "$TCLXSRC/tclx" \
+      && { [ -x configure ] || autoreconf -fi; } \
+      && ./configure --with-tcl="$1" --prefix="$2" --exec-prefix="$2" \
+      && make && make install )
+    rm -rf "$TCLXSRC"
+}
+
+case "$FAMILY" in
+    arch)
+        TCL_CFLAGS=""   # tcl.h lives directly in /usr/include
+        has_tclx || build_tclx /usr/lib /usr
+        ;;
+    fedora)
+        if [ ! -x "$PRIVATE_TCL/bin/tclsh" ]; then
+            log "Building private Tcl 8.6 in $PRIVATE_TCL (distro Tcl is 9.x)"
+            # The source tree stays in place: tclConfig.sh records it as
+            # TCL_SRC_DIR, where TclX's configure finds private headers.
+            mkdir -p "$PRIVATE_TCL/src"
+            curl -fsSL "$TCL86_URL" | tar -xz -C "$PRIVATE_TCL/src"
+            ( cd "$PRIVATE_TCL"/src/tcl-core-8-6-*/unix \
+              && ./configure --prefix="$PRIVATE_TCL" >/dev/null \
+              && make -j"$(nproc)" >/dev/null && make install >/dev/null )
+            ln -sf tclsh8.6 "$PRIVATE_TCL/bin/tclsh"
+            echo "$PRIVATE_TCL/lib" > /etc/ld.so.conf.d/emacspeak-tcl.conf
+            ldconfig
+        fi
+        TCLSH="$PRIVATE_TCL/bin/tclsh"
+        TCL_CFLAGS="-I$PRIVATE_TCL/include"
+        TCL_LIBS="-L$PRIVATE_TCL/lib -ltcl8.6"
+        has_tclx || build_tclx "$PRIVATE_TCL/lib" "$PRIVATE_TCL"
+        ;;
+esac
+has_tclx || die "TclX still does not load in $TCLSH; emacspeak's servers need it."
+
+# --------------------------------------------------------------------------
+# 3. Voxin (skipped entirely when no archive was given). The archive is an
 #    installer tree; we do what its installer does, deterministically:
 #      rfs_<arch>.txz  -> /opt/oralux/voxin/{lib,bin}   (libvoxin, voxin-say)
 #      rfs_all.txz     -> /opt/oralux/voxin/{include,rfs32}  (32-bit world)
@@ -132,13 +262,14 @@ for l in $LANGS; do
     cat "$INIDIR/$l.ini" >> "$NEWCONF"
 done
 
-# Library wiring. libvoxin.so.1 IS the 64-bit ECI shim; Voxin's own deb just
-# symlinks the libibmeci.so name to it. dlopen("libibmeci.so") searches the
-# trusted dirs directly, so the symlink lives in /usr/lib; the ld.so.conf.d
-# entry lets binaries linked against libvoxin.so.1 (voxin-say) resolve it.
-log "Wiring libraries"
+# Library wiring. libvoxin.so.1 IS the 64-bit ECI shim; Voxin's own packages
+# just symlink the libibmeci.so name to it. dlopen("libibmeci.so") searches
+# the trusted system libdir directly ($SYS_LIBDIR: /usr/lib64 on Fedora,
+# /usr/lib elsewhere); the ld.so.conf.d entry lets binaries linked against
+# libvoxin.so.1 by soname (voxin-say) resolve it.
+log "Wiring libraries (system libdir: $SYS_LIBDIR)"
 [ -e /opt/oralux/voxin/lib/libvoxin.so.1 ] || die "libvoxin.so.1 missing after extraction"
-ln -sf /opt/oralux/voxin/lib/libvoxin.so.1 /usr/lib/libibmeci.so
+ln -sf /opt/oralux/voxin/lib/libvoxin.so.1 "$SYS_LIBDIR/libibmeci.so"
 echo /opt/oralux/voxin/lib > /etc/ld.so.conf.d/voxin.conf
 ldconfig
 ln -sf /opt/oralux/voxin/bin/voxin-say /usr/local/bin/voxin-say
@@ -159,7 +290,7 @@ echo "  OK: $(stat -c%s /tmp/voxin-selftest.wav) bytes of speech"
 fi # end of Voxin section
 
 # --------------------------------------------------------------------------
-# 3. Emacspeak, run in place from $EMACSPEAK_DIR (no `make install` needed).
+# 4. Emacspeak, run in place from $EMACSPEAK_DIR (no `make install` needed).
 if [ -d "$EMACSPEAK_DIR/.git" ]; then
     log "Emacspeak already cloned at $EMACSPEAK_DIR; leaving it as is"
 else
@@ -171,17 +302,26 @@ fi
 log "Building emacspeak (byte-compiling the lisp)"
 ( cd "$EMACSPEAK_DIR" && make config && make emacspeak )
 
+# The servers run via their "#!/usr/bin/tclsh" shebang. Where we built a
+# private Tcl (Fedora), point them at it. Safe to rerun after upstream pulls.
+if [ "$TCLSH" != /usr/bin/tclsh ]; then
+    log "Pointing emacspeak server shebangs at $TCLSH"
+    for f in "$EMACSPEAK_DIR"/servers/*; do
+        [ -f "$f" ] || continue
+        head -1 "$f" | grep -q '^#!.*tclsh' && \
+            sed -i "1s|^#!.*|#!$TCLSH|" "$f"
+    done
+fi
+
 log "Building atcleci.so (Tcl glue that dlopens libibmeci.so, speaks via ALSA)"
-make -C "$EMACSPEAK_DIR/servers/linux-outloud"
+make -C "$EMACSPEAK_DIR/servers/linux-outloud" \
+    CFLAGS="-g -O2 -fPIC -DPIC -std=c++11 $TCL_CFLAGS" \
+    LIBS="$TCL_LIBS -lasound -ldl"
 
 # --------------------------------------------------------------------------
-# 4. Optional software DECtalk.
+# 5. Optional software DECtalk.
 if [ "$WITH_DECTALK" = yes ]; then
-    log "Building software DECtalk (this is 1990s C; gcc needs -fpermissive)"
-    if [ "$SKIP_DEPS" = no ]; then
-        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            build-essential autoconf automake libpulse-dev libpulse0
-    fi
+    log "Building software DECtalk (this is 1990s C; newer gcc needs -fpermissive)"
     DTKSRC=$(mktemp -d)
     git clone --depth 1 --branch "$DECTALK_REF" \
         https://github.com/dectalk/dectalk.git "$DTKSRC/dectalk"
@@ -203,8 +343,9 @@ if [ "$WITH_DECTALK" = yes ]; then
     cp "$EMACSPEAK_DIR/servers/software-dtk/DECtalk.conf" /opt/dectalk/DECtalk.conf
     log "Building tcldtk.so (Tcl glue for the dtk-soft server)"
     make -C "$EMACSPEAK_DIR/servers/software-dtk" \
-        CFLAGS="-g -O2 -fPIC -DPIC -I/usr/include/tcl8.6 -I/opt/dectalk/include" \
-        LDFLAGS="-L/opt/dectalk/lib"
+        CFLAGS="-g -O2 -fPIC -DPIC $TCL_CFLAGS -I/opt/dectalk/include" \
+        LDFLAGS="-L/opt/dectalk/lib" \
+        LIBS="$TCL_LIBS -ltts -ltts_us -ldl"
     log "DECtalk self-test"
     /opt/dectalk/say -fo /tmp/dectalk-selftest.wav -a "DECtalk is installed."
     [ -s /tmp/dectalk-selftest.wav ] || die "DECtalk say produced no audio data"
@@ -212,7 +353,7 @@ if [ "$WITH_DECTALK" = yes ]; then
 fi
 
 # --------------------------------------------------------------------------
-# 5. Launcher. Default voice: Eloquence when Voxin is installed, else DECtalk.
+# 6. Launcher. Default voice: Eloquence when Voxin is installed, else DECtalk.
 if [ -n "$VOXIN_TGZ" ]; then DEFAULT_TTS=outloud; else DEFAULT_TTS=dtk-soft; fi
 log "Installing /usr/local/bin/emacspeak launcher (default voice: $DEFAULT_TTS)"
 cat > /usr/local/bin/emacspeak <<LAUNCHER
