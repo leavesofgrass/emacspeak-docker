@@ -7,10 +7,11 @@ services:
       # Speech server: outloud (IBM ViaVoice/Eloquence) is the default;
       # dtk-soft gives software DECtalk (run.ps1 -Dectalk does this too).
       DTK_PROGRAM: ${DTK_PROGRAM:-outloud}
-      # Where the container sends audio. Default assumes a PulseAudio server
-      # on the Windows host (see scripts/setup-audio.ps1). Override for other
-      # setups, e.g. PULSE_SERVER=unix:/mnt/wslg/PulseServer with docker-ce
-      # inside a WSL2 distro.
+      # Where the container sends audio. The default reaches a PulseAudio
+      # server on the host over TCP (Windows: scripts/setup-audio.ps1;
+      # macOS: brew-installed pulseaudio -- see README). On a Linux host,
+      # uncomment the pulse-socket volume below and use
+      # PULSE_SERVER=unix:/run/host-pulse/native instead.
       PULSE_SERVER: ${PULSE_SERVER:-tcp:host.docker.internal:4713}
       # Lower is snappier speech, higher is safer against dropouts.
       PULSE_LATENCY_MSEC: ${PULSE_LATENCY_MSEC:-30}
@@ -21,6 +22,9 @@ services:
       - emacspeak-home:/home/speak
       # Proprietary Outloud/Voxin engine, installed once by install-outloud
       - voxin:/opt/oralux
+      # Linux hosts: uncomment to hand the container your desktop's
+      # PulseAudio/PipeWire socket (then set PULSE_SERVER as noted above).
+      # - ${XDG_RUNTIME_DIR:-/run/user/1000}/pulse:/run/host-pulse
     stdin_open: true
     tty: true
 

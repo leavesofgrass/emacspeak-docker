@@ -6,10 +6,21 @@ container) sets up emacspeak with **IBM ViaVoice / Eloquence** ("Outloud",
 via [Voxin](https://voxin.oralux.net)) and **software DECtalk**: the two
 classic synthesizers many blind users grew up on, instead of espeak.
 
-If you have a Debian-family Linux system, you are three commands away from
-a talking Emacs. If you're on Windows or prefer containers, the Docker
-route gives you the same thing. Either way, every step is documented — see
-[GUIDE.md](GUIDE.md) for how all the pieces actually work.
+**Pick your path:**
+
+- **Debian-family Linux** (Debian, Ubuntu, Mint...): run one script —
+  see "Quick start on Linux" below. Fastest route.
+- **Any other Linux** (Fedora, Arch, openSUSE...): same script with
+  `--skip-deps` after installing the equivalents of a short package list,
+  or use Docker. See the note at the end of the Linux section.
+- **macOS or Windows**: use Docker — see "Quick start with Docker". The
+  Voxin engine is Linux-only binary code, so on a Mac it runs happily
+  *inside* the Linux container but can never run bare-metal. (Mac users
+  wanting native speech without Docker should look at emacspeak's own
+  `mac` and `swiftmac` servers upstream — different voices, no Voxin.)
+
+Every step of all of this is documented — see [GUIDE.md](GUIDE.md) for
+how the pieces actually work.
 
 ## Quick start on Linux (Debian, Ubuntu, and friends)
 
@@ -62,56 +73,82 @@ launcher, put this at the very top of `~/.emacs`:
 (load-file "/opt/emacspeak/lisp/emacspeak-setup.el")
 ```
 
-## Quick start with Docker
+**Not on a Debian-family distro?** The script's only Debian-specific part
+is `apt-get`. Install your distro's equivalents of: Emacs 29+, git, gcc
+and g++, make, Tcl 8.6 with headers, TclX, ALSA headers (alsa-lib devel),
+sox, pulseaudio-utils, and 32-bit glibc/libstdc++ runtime (for Voxin's
+engine process) — then rerun with `--skip-deps`:
 
-Use this on Windows, or anywhere you'd rather keep the whole stack in a
-container. The container holds emacspeak, DECtalk, and (after a one-time
-step) your Voxin engine; audio streams to a PulseAudio server on the host.
+```bash
+sudo ./scripts/install-emacspeak-voxin.sh --skip-deps ~/voxin-enu-v3.3rc4.tar.gz --with-dectalk
+```
 
-On **Windows** (Docker Desktop with the WSL2 backend):
+Everything after the package step is distro-independent.
 
-1. Set up host audio — downloads the small
-   [pulseaudio-win32](https://github.com/pgaskin/pulseaudio-win32) server,
-   starts it, and registers it to start at logon. Allow it through the
-   firewall when Windows asks:
+## Quick start with Docker (Windows, macOS, or any Linux)
+
+The container holds emacspeak, DECtalk, and (after a one-time step) your
+Voxin engine; audio streams to a PulseAudio server on the host. The
+commands below use `./run.sh` on macOS/Linux — Windows users substitute
+`powershell -ExecutionPolicy Bypass -File run.ps1` with the flag spelled
+`-Test`, `-Dectalk`, `-InstallOutloud`, and so on.
+
+**Step 1 — host audio** (the only platform-specific step):
+
+- **Windows** (Docker Desktop, WSL2 backend): this downloads the small
+  [pulseaudio-win32](https://github.com/pgaskin/pulseaudio-win32) server,
+  starts it, and registers it to start at logon. Allow it through the
+  firewall when Windows asks:
 
 ```bash
 powershell -ExecutionPolicy Bypass -File scripts\setup-audio.ps1 -AutoStart
 ```
 
-2. Build the image (10–20 minutes the first time):
+- **macOS** (Docker Desktop): install PulseAudio with Homebrew and run it
+  listening for the container:
+
+```bash
+brew install pulseaudio
+```
+
+```bash
+pulseaudio --daemon --exit-idle-time=-1 --load="module-native-protocol-tcp auth-ip-acl=127.0.0.1;172.16.0.0/12"
+```
+
+- **Linux host**: no extra server needed — hand the container your
+  desktop's existing PulseAudio/PipeWire socket. In
+  `docker-compose.yml`, uncomment the pulse-socket volume line and set
+  `PULSE_SERVER=unix:/run/host-pulse/native` (both marked with comments
+  in the file).
+
+**Step 2 — build the image** (10–20 minutes the first time):
 
 ```bash
 docker compose build
 ```
 
-3. If you have Voxin: copy the archive into `.\work`, then install it into
-   a persistent volume (survives rebuilds; never enters the image):
+**Step 3 — if you have Voxin**: copy the archive into `./work`, then
+install it into a persistent volume (survives rebuilds; never enters the
+image):
 
 ```bash
-powershell -ExecutionPolicy Bypass -File run.ps1 -InstallOutloud
+./run.sh install-outloud
 ```
 
-4. Test, then run:
+**Step 4 — test, then run:**
 
 ```bash
-powershell -ExecutionPolicy Bypass -File run.ps1 -Test
+./run.sh test
 ```
 
 ```bash
-powershell -ExecutionPolicy Bypass -File run.ps1
+./run.sh
 ```
 
-`run.ps1` starts emacspeak with Eloquence; `-Dectalk` switches voice,
-`-Shell` gives a bash shell, `-Test` runs the speech smoke test. Your
-files live in `.\work` (mounted at `~/work` in the container) and your
-home directory persists in a volume.
-
-On a **Linux host**, the same compose file works with your desktop's
-PulseAudio/PipeWire socket instead of the Windows server — set
-`PULSE_SERVER=unix:/run/user/1000/pulse/native` (or the WSLg socket
-`unix:/mnt/wslg/PulseServer` under docker-ce in WSL2) and bind-mount the
-socket path in `docker-compose.yml`.
+Plain `./run.sh` starts emacspeak with Eloquence (or DECtalk if no Voxin
+is installed); `./run.sh dectalk` switches voice, `./run.sh shell` gives
+a bash shell in the container. Your files live in `./work` (mounted at
+`~/work` inside), and your home directory persists in a volume.
 
 ## Verifying and troubleshooting
 
@@ -152,7 +189,7 @@ years — that document is the answer.
 - `Dockerfile`, `docker-compose.yml` — the container route
 - `container/` — files baked into the image: launcher, `test-speech`,
   `install-outloud`, Emacs init
-- `run.ps1` — Windows convenience launcher
+- `run.sh`, `run.ps1` — convenience launchers (POSIX and Windows)
 - `GUIDE.md` — the deep dive
 - `work/` — your files; also where Voxin archives go (gitignored)
 
