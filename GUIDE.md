@@ -286,7 +286,7 @@ Work upward; the first failing layer is the problem:
 ## Licensing
 
 Emacspeak is GPL-2.0+. Voxin/ViaVoice is commercial: your archive, your
-license — keep it out of public images and repos (a private repo, as used
-here, is exactly right). The DECtalk sources were shared publicly by their
+license — keep it out of public images and repos (the ignore rules and
+pre-commit hook in this repository enforce exactly that). The DECtalk sources were shared publicly by their
 original developer and community-preserved, but carry no formal license;
 build and use privately, don't redistribute binaries.

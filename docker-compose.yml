@@ -1,7 +1,7 @@
 services:
   emacspeak:
     build: .
-    image: emacspeak-dectalk:latest
+    image: emacspeak-docker:latest
     hostname: emacspeak
     environment:
       # Speech server: outloud (IBM ViaVoice/Eloquence) is the default;
