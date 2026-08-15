@@ -12,7 +12,7 @@
 # Anything else: install the dependencies yourself, rerun with --skip-deps.
 #
 # Usage:
-#   sudo ./install-emacspeak-voxin.sh /path/to/voxin-enu-v3.3rc4.tar.gz [options]
+#   sudo ./install-emacspeak-voxin.sh /path/to/voxin-enu-v3.x.tar.gz [options]
 #   sudo ./install-emacspeak-voxin.sh --with-dectalk        # DECtalk only, no license needed
 #
 # Options:

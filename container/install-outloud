@@ -4,7 +4,7 @@
 # container restarts and never gets baked into an image.
 #
 # From Windows:
-#   1. Copy your Voxin archive (e.g. voxin-enu-v3.3rc4.tar.gz) into .\work
+#   1. Copy your Voxin archive (e.g. voxin-enu-v3.x.tar.gz) into .\work
 #   2. powershell -File run.ps1 -InstallOutloud
 # Or directly:
 #   docker compose run --rm -u root emacspeak install-outloud [archive-or-dir]

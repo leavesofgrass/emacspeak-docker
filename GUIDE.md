@@ -87,7 +87,7 @@ the single most useful debugging trick in this whole domain:
 
 ## Anatomy of a Voxin 3.x archive
 
-Your `voxin-enu-v3.3rc4.tar.gz` unpacks to an installer tree. The parts
+Your `voxin-enu-v3.x.tar.gz` unpacks to an installer tree. The parts
 that matter (everything else is packaging for specific distros):
 
 - `packages/all/rfs_<version>.<arch>.txz` — 64-bit Voxin runtime,
@@ -107,7 +107,7 @@ that matter (everything else is packaging for specific distros):
 
 This is exactly what `scripts/install-emacspeak-voxin.sh` automates:
 
-    sudo ./install-emacspeak-voxin.sh voxin-enu-v3.3rc4.tar.gz --with-dectalk
+    sudo ./install-emacspeak-voxin.sh voxin-enu-v3.x.tar.gz --with-dectalk
 
 (The Voxin archive is optional: `--with-dectalk` alone installs a
 DECtalk-only system, no license required, and the launcher's default voice

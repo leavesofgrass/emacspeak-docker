@@ -34,7 +34,7 @@ how the pieces actually work.
   too old.)
 - For the Eloquence voice: your licensed Voxin archive, about 15 EUR from
   [voxin.oralux.net](https://voxin.oralux.net) — a file like
-  `voxin-enu-v3.3rc4.tar.gz`. **No Voxin? Skip it.** DECtalk needs no
+  `voxin-enu-v3.x.tar.gz`. **No Voxin? Skip it.** DECtalk needs no
   license and sounds like 1985 in the best way.
 
 **Install** (pick the line that matches what you have):
@@ -44,13 +44,13 @@ git clone https://github.com/leavesofgrass/emacspeak-docker
 cd emacspeak-docker
 
 # Both voices (Voxin archive + DECtalk):
-sudo ./scripts/install-emacspeak-voxin.sh ~/voxin-enu-v3.3rc4.tar.gz --with-dectalk
+sudo ./scripts/install-emacspeak-voxin.sh ~/voxin-enu-v3.x.tar.gz --with-dectalk
 
 # DECtalk only — free, no archive needed:
 sudo ./scripts/install-emacspeak-voxin.sh --with-dectalk
 
 # Eloquence only:
-sudo ./scripts/install-emacspeak-voxin.sh ~/voxin-enu-v3.3rc4.tar.gz
+sudo ./scripts/install-emacspeak-voxin.sh ~/voxin-enu-v3.x.tar.gz
 ```
 
 The script narrates each step, self-tests the speech engines before it
