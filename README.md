@@ -92,11 +92,36 @@ launcher, put this at the very top of `~/.emacs`:
   and 32-bit glibc/libstdc++ (for Voxin), then rerun with `--skip-deps`.
   Everything after the package step is distro-independent.
 
-**Fedora quick path (espeak only).** To get emacspeak talking with espeak-ng
-on Fedora 43, 44 or 45, run `sudo bash scripts/install-emacspeak-fedora.sh`.
-It installs Fedora's own Tcl 8.6 packages (`tcl8`, `tcl8-devel`, `tclx`),
-builds emacspeak and its espeak server against them, and self-tests. For
-the Eloquence (Voxin) or DECtalk voices, use `install-emacspeak-voxin.sh`.
+**Quick paths per platform.** One script per family, each with the same
+options (`--help` lists them), self-tests that need no sound card, and a
+rerun that updates and rebuilds. The Linux scripts install espeak-ng speech
+only; for the Eloquence (Voxin) or DECtalk voices on Linux, use
+`install-emacspeak-voxin.sh`. The macOS script uses OmniVox.
+
+- **Fedora 43, 44 or 45:** `sudo bash scripts/install-emacspeak-fedora.sh`.
+  Fedora's default `tcl` is Tcl 9, which emacspeak cannot use. The script
+  installs Fedora's own `tcl8`, `tcl8-devel` and `tclx` packages and points
+  the speech servers at `tclsh8.6`. Fedora's packaged `emacspeak` (60.0)
+  does not do that: as shipped on Fedora 44 its servers start Tcl 9 and die
+  with "can't find package Tclx", so prefer this script, or point its
+  servers at `/usr/bin/tclsh8.6` yourself.
+- **Debian 13, Ubuntu 24.04, and relatives such as Linux Mint 22:**
+  `sudo bash scripts/install-emacspeak-debian.sh`. Stock Tcl 8.6 and
+  `tclx8.4`. On Debian 12 and Ubuntu 22.04 it stops early, because their
+  Emacs is older than 29.1, and names the backports route on Debian.
+- **Arch, CachyOS, EndeavourOS, Manjaro:**
+  `sudo bash scripts/install-emacspeak-arch.sh`. Arch's `tcl` is still 8.6.
+  TclX is not packaged, so the script builds it from source into
+  `/usr/lib/tclx8.6`. The pacman step is a full system upgrade, as Arch
+  requires.
+- **macOS 13 or newer, with OmniVox:** `bash scripts/install-emacspeak-macos.sh`
+  as your normal user, with Homebrew installed. OmniVox is a Rust speech
+  server by the swiftmac author that speaks with the macOS system voices.
+  The script installs its checksum-verified release (or builds it with
+  `--omnivox-source`), installs Emacs 30 from the emacs-plus tap when none
+  is new enough, and writes an `emacspeak` launcher into Homebrew's bin.
+  Not yet run on a real Mac: the GitHub Actions workflow in
+  `.github/workflows/` tests it on Apple silicon and Intel runners.
 
 ## Quick start with Docker (Windows, macOS, or any Linux)
 

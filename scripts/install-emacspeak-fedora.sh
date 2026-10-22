@@ -55,6 +55,16 @@ logged() {
     fi
 }
 
+# Emacspeak's Makefiles hand $(MAKEFLAGS) to their sub-makes as plain words.
+# GNU make 4.3 writes the -w that "make -C" adds as a bare "w", which the
+# sub-make then takes for a target and fails. Fedora 43 and later ship make
+# 4.4, which is fine, but run make from inside the directory anyway, without
+# flags inherited from outside, so this script matches its Debian sibling.
+make_in() { # $1 = directory, then the make arguments
+    local dir=$1; shift
+    ( cd "$dir" && env -u MAKEFLAGS -u MFLAGS make "$@" )
+}
+
 # tclsh reading a script from stdin exits 0 even after an error, so these
 # Tcl checks exit 1 themselves when something fails.
 tclx_version() {
@@ -162,14 +172,14 @@ fi
 echo "Emacspeak source: $(git -C "$PREFIX" log -1 --format='commit %h of %cd' --date=short)"
 
 log "Configuring emacspeak (make config)"
-logged "make config" make -C "$PREFIX" config
+logged "make config" make_in "$PREFIX" config
 
 log "Byte-compiling emacspeak's Lisp (make emacspeak, a few minutes)"
-logged "make emacspeak" make -C "$PREFIX" emacspeak
+logged "make emacspeak" make_in "$PREFIX" emacspeak
 
 log "Building tclespeak.so, the espeak glue, against Tcl 8.6"
 # tcl8-devel puts the 8.6 headers straight into /usr/include.
-logged "building tclespeak.so" make -B -C "$PREFIX/servers/native-espeak" \
+logged "building tclespeak.so" make_in "$PREFIX/servers/native-espeak" -B \
     TCL_INCLUDE=/usr/include LIBS="-ltcl8.6 -lespeak-ng"
 SO="$PREFIX/servers/native-espeak/tclespeak.so"
 [ -f "$SO" ] || die "the build finished but $SO is missing"
