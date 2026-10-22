@@ -95,10 +95,13 @@ launcher, put this at the very top of `~/.emacs`:
   Everything after the package step is distro-independent.
 
 **Quick paths per platform.** One script per family, each with the same
-options (`--help` lists them), self-tests that need no sound card, and a
-rerun that updates and rebuilds. The Linux scripts install espeak-ng speech
-only; for the Eloquence (Voxin) or DECtalk voices on Linux, use
-`install-emacspeak-voxin.sh`. The macOS and Windows scripts use OmniVox.
+options (`--help` lists them), self-tests, and a rerun that updates and
+rebuilds. Each takes `--speech LIST` (`-Speech` on Windows) to choose the
+speech engines; `--speech list` shows the platform's choices, and a run in a
+terminal without it asks with a numbered menu. The Linux default is
+espeak-ng; `--speech` adds OmniVox, software DECtalk and, with
+`--voxin-archive FILE`, Eloquence from Voxin. The macOS and Windows default
+is OmniVox. Details in GUIDE.md, "Choosing speech engines".
 
 - **Fedora 43, 44 or 45:** `sudo bash scripts/install-emacspeak-fedora.sh`.
   Fedora's default `tcl` is Tcl 9, which emacspeak cannot use. The script
@@ -126,7 +129,9 @@ only; for the Eloquence (Voxin) or DECtalk voices on Linux, use
   Homebrew's bin. Not yet run on a real Mac with a logged-in user: the
   GitHub Actions workflow in `.github/workflows/` runs it on Apple silicon
   and Intel runners, where the system voice gives no audio, so its
-  speech self-tests report a warning and a skip there.
+  speech self-tests report a warning and a skip there. `--speech` adds
+  OmniVox's espeak-ng engine, emacspeak's swiftmac server, and the Tcl
+  espeak server.
 - **Windows 10 or 11, with OmniVox:** in PowerShell, as your normal user,
   `powershell -ExecutionPolicy Bypass -File scripts\install-emacspeak-windows.ps1`.
   It installs GNU Emacs with winget when none is 29.1 or newer, clones and
@@ -137,7 +142,9 @@ only; for the Eloquence (Voxin) or DECtalk voices on Linux, use
   `-StartMenuShortcut`. NVDA and JAWS speak over emacspeak unless you
   pause them; the summary says how. Tested with a portable Emacs 30.2;
   the GitHub Actions workflow in `.github/workflows/` runs it on x64 and
-  arm64 runners.
+  arm64 runners. `-Speech` adds OmniVox's espeak-ng engine (eSpeak NG's
+  voice data needed) and the sharpwin server (.NET 8 SDK); `-NoSound`
+  keeps the self-tests silent.
 
 ## Quick start with Docker (Windows, macOS, or any Linux)
 
