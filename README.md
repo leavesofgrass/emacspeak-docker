@@ -120,10 +120,13 @@ only; for the Eloquence (Voxin) or DECtalk voices on Linux, use
   as your normal user, with Homebrew installed. OmniVox is a Rust speech
   server by the swiftmac author that speaks with the macOS system voices.
   The script installs its checksum-verified release (or builds it with
-  `--omnivox-source`), installs Emacs 30 from the emacs-plus tap when none
-  is new enough, and writes an `emacspeak` launcher into Homebrew's bin.
-  Not yet run on a real Mac: the GitHub Actions workflow in
-  `.github/workflows/` tests it on Apple silicon and Intel runners.
+  `--omnivox-source`), installs Homebrew's terminal `emacs` when none is
+  29.1 or newer (`--emacs-plus` installs emacs-plus@30 with Emacs.app
+  instead, which trusts that tap), and writes an `emacspeak` launcher into
+  Homebrew's bin. Not yet run on a real Mac with a logged-in user: the
+  GitHub Actions workflow in `.github/workflows/` runs it on Apple silicon
+  and Intel runners, where the system voice gives no audio, so its
+  speech self-tests report a warning and a skip there.
 
 ## Quick start with Docker (Windows, macOS, or any Linux)
 

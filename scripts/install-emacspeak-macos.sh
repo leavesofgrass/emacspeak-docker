@@ -29,8 +29,13 @@ OMNIVOX_REPO=robertmeta/omnivox
 # Used only when GitHub cannot be asked for the latest release and no
 # OmniVox is installed yet: the release this script was written against.
 OMNIVOX_FALLBACK=1.3.0
-# Fully qualified, so Homebrew 6 trusts this one formula, not the whole tap.
-EMACS_FORMULA=d12frosted/emacs-plus/emacs-plus@30
+# Without Emacs 29.1 or newer, install Homebrew's own emacs formula: a
+# terminal Emacs, which is what the launcher runs, prebuilt for Apple silicon.
+EMACS_ROUTE=core
+EMACS_FORMULA=emacs
+# --emacs-plus installs this instead, for people who also want Emacs.app.
+EMACS_PLUS_TAP=d12frosted/emacs-plus
+EMACS_PLUS_FORMULA=emacs-plus@30
 LOG=$HOME/Library/Logs/install-emacspeak-macos.log
 MARKER="Written by install-emacspeak-macos.sh"
 
@@ -51,13 +56,16 @@ Options:
                          (default: the latest release)
   --omnivox-source       build OmniVox from source with cargo
                          instead of using the prebuilt release
+  --emacs-plus           use $EMACS_PLUS_FORMULA, which includes Emacs.app,
+                         from the $EMACS_PLUS_TAP tap, instead of
+                         Homebrew's emacs. This trusts that whole tap.
   --skip-deps            do not run brew; you installed Emacs
                          (and cmake and Rust) yourself
   --no-test              skip the self-tests at the end
   --help                 show this help
 
-Without Emacs 29.1 or newer, it installs $EMACS_FORMULA
-with Homebrew. --omnivox-source also needs cmake and Rust, which it
+Without Emacs 29.1 or newer, it installs Homebrew's emacs formula, a
+terminal Emacs. --omnivox-source also needs cmake and Rust, which it
 installs with Homebrew if they are missing. Build output goes to
 $LOG.
 USAGE
@@ -71,13 +79,14 @@ warn() { printf 'Warning: %s\n' "$*"; }
 # the log, then the error, so the last line on screen names the problem.
 # HINT, set by each section, says what to do about a failure there.
 HINT=""
+fail_with_log() { # $1 = what failed
+    printf '\nLast lines of %s:\n' "$LOG" >&2
+    tail -n 20 "$LOG" >&2
+    die "$1 failed. ${HINT:+$HINT }The full output is in $LOG"
+}
 logged() {
     local what=$1; shift
-    if ! "$@" >>"$LOG" 2>&1; then
-        printf '\nLast lines of %s:\n' "$LOG" >&2
-        tail -n 20 "$LOG" >&2
-        die "$what failed. ${HINT:+$HINT }The full output is in $LOG"
-    fi
+    "$@" >>"$LOG" 2>&1 || fail_with_log "$what"
 }
 
 # emacspeak's Makefile runs its sub-makes as "$(MAKE) $(MAKEFLAGS)", so any
@@ -119,12 +128,19 @@ emacs_version() { # $1 = an emacs program
 }
 
 # Sets EMACS_BIN to the first Emacs 29.1 or newer: the one on PATH, then
-# Homebrew's emacs-plus@30, which may be installed but not linked.
+# Homebrew's emacs and emacs-plus@30, which may be installed but not linked.
+# With --emacs-plus, only emacs-plus@30 counts.
 find_emacs() {
     local candidate
     EMACS_BIN=""
-    for candidate in "$(command -v emacs || true)" \
-                     "$BREW_PREFIX/opt/emacs-plus@30/bin/emacs"; do
+    if [ "$EMACS_ROUTE" = plus ]; then
+        set -- "$BREW_PREFIX/opt/$EMACS_PLUS_FORMULA/bin/emacs"
+    else
+        set -- "$(command -v emacs || true)" \
+               "$BREW_PREFIX/opt/$EMACS_FORMULA/bin/emacs" \
+               "$BREW_PREFIX/opt/$EMACS_PLUS_FORMULA/bin/emacs"
+    fi
+    for candidate in "$@"; do
         if [ -n "$candidate" ] && [ -x "$candidate" ] &&
            emacs_new_enough "$candidate"; then
             EMACS_BIN=$candidate
@@ -151,10 +167,66 @@ valid_version() {
 }
 
 # Prints the latest OmniVox release, such as 1.3.0, from the GitHub API.
+# GitHub limits API calls without a token, which hits shared machines such
+# as CI runners, so a GH_TOKEN or GITHUB_TOKEN already in the environment
+# is sent to api.github.com. It goes in on curl's standard input, not its
+# command line, so other users cannot read it in the process list.
 latest_omnivox_version() {
-    curl -fsSL --retry 2 --max-time 30 \
-        "https://api.github.com/repos/$OMNIVOX_REPO/releases/latest" 2>>"$LOG" |
-        sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\{0,1\}\([^"]*\)".*/\1/p'
+    local url="https://api.github.com/repos/$OMNIVOX_REPO/releases/latest"
+    local token=${GH_TOKEN:-${GITHUB_TOKEN:-}}
+    if [ -n "$token" ]; then
+        printf 'Authorization: Bearer %s\n' "$token" |
+            curl -fsS --retry 2 --max-time 30 -H @- "$url" 2>>"$LOG"
+    else
+        curl -fsS --retry 2 --max-time 30 "$url" 2>>"$LOG"
+    fi | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\{0,1\}\([^"]*\)".*/\1/p'
+}
+
+install_core_emacs() {
+    log "No Emacs 29.1 or newer found: installing Homebrew's emacs formula"
+    echo "It is a terminal Emacs, which is what the launcher runs."
+    if [ "$ARCH" = x64 ] || [ "$MACOS_MAJOR" -lt 15 ]; then
+        warn "Homebrew may have no prebuilt emacs for $ARCH_NAME Macs on \
+macOS $MACOS_MAJOR, so it may compile Emacs, which can take an hour or more."
+        echo "Progress goes to the build log. To follow it: tail -f $LOG"
+    fi
+    logged "brew install $EMACS_FORMULA" "$BREW" install "$EMACS_FORMULA"
+}
+
+install_emacs_plus() {
+    local brew_major
+    log "Installing $EMACS_PLUS_FORMULA, with Emacs.app, from the $EMACS_PLUS_TAP tap"
+    brew_major=$("$BREW" --version 2>>"$LOG" | sed -n 's/^Homebrew \([0-9][0-9]*\).*/\1/p')
+    if [ "${brew_major:-0}" -ge 6 ]; then
+        echo "This trusts the whole $EMACS_PLUS_TAP tap."
+        echo "Homebrew 6 runs code only from taps you trust."
+        echo "$EMACS_PLUS_FORMULA loads other formulas from its tap"
+        echo "while it installs, so trusting one formula fails."
+        echo "To undo it later: brew untrust $EMACS_PLUS_TAP"
+        # The tap's README trusts before tapping; Homebrew's own guide taps
+        # first. Try trust first, and tap first if Homebrew wants that.
+        if ! "$BREW" trust "$EMACS_PLUS_TAP" >>"$LOG" 2>&1; then
+            logged "brew tap $EMACS_PLUS_TAP" "$BREW" tap "$EMACS_PLUS_TAP"
+            logged "brew trust $EMACS_PLUS_TAP" "$BREW" trust "$EMACS_PLUS_TAP"
+        fi
+    fi
+    logged "brew tap $EMACS_PLUS_TAP" "$BREW" tap "$EMACS_PLUS_TAP"
+    echo "Homebrew compiles emacs-plus from source: a few minutes to half an hour."
+    if [ "$ARCH" = x64 ] || [ "$MACOS_MAJOR" -lt 15 ]; then
+        warn "Homebrew no longer has prebuilt packages for $ARCH_NAME Macs on \
+macOS $MACOS_MAJOR, so Emacs's libraries compile too, which can take hours."
+    fi
+    echo "Progress goes to the build log. To follow it: tail -f $LOG"
+    if ! "$BREW" install "$EMACS_PLUS_TAP/$EMACS_PLUS_FORMULA" >>"$LOG" 2>&1; then
+        # Homebrew reports an error when it cannot link emacs-plus because
+        # another Emacs is linked as emacs. The keg itself still works.
+        find_emacs || fail_with_log "brew install $EMACS_PLUS_TAP/$EMACS_PLUS_FORMULA"
+        warn "Homebrew reported an error (see $LOG), but $EMACS_PLUS_FORMULA \
+is installed and runs, so the script goes on. If the error says another Emacs \
+is linked as emacs: the launcher runs $EMACS_PLUS_FORMULA by its full path, \
+and brew unlink emacs, then brew link $EMACS_PLUS_FORMULA, makes the emacs \
+command run it too."
+    fi
 }
 
 # servers/.servers is part of emacspeak's git tree. M-x dtk-select-server
@@ -252,6 +324,7 @@ while [ $# -gt 0 ]; do
         --ref)             need_value "$@"; REF=$2; shift ;;
         --omnivox-version) need_value "$@"; OMNIVOX_VERSION=${2#v}; shift ;;
         --omnivox-source)  OMNIVOX_ROUTE=source ;;
+        --emacs-plus)      EMACS_ROUTE=plus ;;
         --skip-deps)       SKIP_DEPS=yes ;;
         --no-test)         RUN_TESTS=no ;;
         --help|-h)         usage; exit 0 ;;
@@ -317,18 +390,12 @@ echo "Build log: $LOG"
 # --------------------------------------------------------------------------
 if [ "$SKIP_DEPS" = no ]; then
     HINT="Run brew doctor, fix what it reports, then rerun this script."
-    if ! find_emacs; then
-        log "No Emacs 29.1 or newer found: installing $EMACS_FORMULA with Homebrew"
-        echo "Homebrew compiles emacs-plus from source: about 30 minutes on a recent Mac."
-        if [ "$ARCH" = x64 ]; then
-            warn "Homebrew no longer has prebuilt packages for Intel Macs, so \
-Emacs's libraries compile too, which can take hours."
-        elif [ "$MACOS_MAJOR" -lt 15 ]; then
-            warn "Homebrew no longer has prebuilt packages for macOS $MACOS_MAJOR, \
-so Emacs's libraries compile too, which can take hours."
-        fi
-        echo "Progress goes to the build log. To follow it: tail -f $LOG"
-        logged "brew install $EMACS_FORMULA" "$BREW" install "$EMACS_FORMULA"
+    if find_emacs; then
+        :
+    elif [ "$EMACS_ROUTE" = plus ]; then
+        install_emacs_plus
+    else
+        install_core_emacs
     fi
     if [ "$OMNIVOX_ROUTE" = source ]; then
         if ! command -v cmake >/dev/null; then
@@ -345,6 +412,11 @@ fi
 
 log "Checking Emacs and the build tools"
 if ! find_emacs; then
+    if [ "$EMACS_ROUTE" = plus ]; then
+        die "$EMACS_PLUS_FORMULA is not installed in $BREW_PREFIX/opt. Rerun \
+without --skip-deps, or install it: brew tap $EMACS_PLUS_TAP, then brew trust \
+$EMACS_PLUS_TAP, then brew install $EMACS_PLUS_FORMULA"
+    fi
     if command -v emacs >/dev/null; then
         die "emacspeak needs Emacs 29.1 or newer, and $(command -v emacs) is \
 Emacs $(emacs_version emacs || echo unknown). Install a newer one: brew install $EMACS_FORMULA"
@@ -353,7 +425,7 @@ Emacs $(emacs_version emacs || echo unknown). Install a newer one: brew install 
 fi
 EMACS_VERSION=$(emacs_version "$EMACS_BIN") ||
     die "$EMACS_BIN is installed but does not run in batch mode. Reinstall \
-that Emacs (for emacs-plus: brew reinstall emacs-plus@30), then rerun."
+that Emacs (for Homebrew's: brew reinstall $EMACS_FORMULA), then rerun."
 echo "Emacs $EMACS_VERSION: new enough. Using $EMACS_BIN"
 # emacspeak's lisp/Makefile runs plain "emacs", so put this one first.
 PATH="${EMACS_BIN%/*}:$PATH"
@@ -496,9 +568,20 @@ chmod 0755 "$LAUNCHER"
 echo "Launcher written."
 
 # --------------------------------------------------------------------------
-# Self-tests. Only the last one needs a sound output device, and it is
-# skipped when OmniVox finds none.
+# Self-tests. Only the last one needs sound: it is skipped when OmniVox
+# finds no sound output device, or when the system voice gives no audio,
+# which happens in sessions without a logged-in user (test 3 then warns).
 OMNIVOX=$PREFIX/servers/omnivox
+PASSED=""
+PASS_COUNT=0
+WARNED=""
+SKIPPED=""
+SKIP_WHY=""
+passed() { # $1 = test number, $2 = what passed
+    PASSED="${PASSED:+$PASSED, }$1"
+    PASS_COUNT=$((PASS_COUNT + 1))
+    echo "Pass: $2"
+}
 # Speech synthesis needs your logged-in session on the Mac.
 SPEECH_FIX="If you ran this over ssh, run it in Terminal on the Mac itself."
 LOAD_CHECK='(kill-emacs (if (and (featurep (quote emacspeak))
@@ -512,7 +595,7 @@ if [ "$RUN_TESTS" = yes ]; then
         die "Self-test 1 failed: $OMNIVOX --version did not run. Rerun with \
 --omnivox-source to build it here. See $LOG"
     case "$OUT" in
-        "omnivox "*) echo "Pass: $OUT." ;;
+        "omnivox "*) passed 1 "$OUT." ;;
         *) die "Self-test 1 failed: $OMNIVOX --version printed: $OUT. Rerun \
 with --omnivox-source to build it here." ;;
     esac
@@ -525,35 +608,50 @@ with --omnivox-source to build it here." ;;
     [ "${VOICES:-0}" -ge 1 ] ||
         die "Self-test 2 failed: OmniVox found no voices. Check System Settings, \
 Accessibility, Spoken Content."
-    echo "Pass: $VOICES voices."
+    passed 2 "$VOICES voices."
 
     log "Self-test 3 of 7: OmniVox's own check synthesizes speech"
     echo "With a sound device, you may hear a tone and: Omnivox is ready."
     OUT=$(limited 120 "" "$OMNIVOX" --check 2>>"$LOG") ||
-        die "Self-test 3 failed: $OMNIVOX --check did not finish. $SPEECH_FIX See $LOG"
+        die "Self-test 3 failed: $OMNIVOX --check did not run to the end. \
+$SPEECH_FIX See $LOG"
     printf '%s\n' "$OUT" >>"$LOG"
-    grep -q 'Status: OK - ' <<<"$OUT" ||
-        die "Self-test 3 failed: OmniVox could not synthesize speech. $SPEECH_FIX \
-Its report is in $LOG"
-    if grep -q 'Audio device: OK' <<<"$OUT"; then
-        SOUND=yes
-        echo "Pass: speech synthesized, and a sound output device was found."
-    else
-        SOUND=no
-        echo "Pass: speech synthesized. No sound output device was found."
-    fi
+    # The status line under [synthesis], such as "OK - 9000 samples, ..."
+    # or "WARNING - synthesized empty buffer".
+    SYNTH=$(awk '/^\[synthesis\]/ { getline; sub(/^[[:space:]]*Status:[[:space:]]*/, "");
+                                     print; exit }' <<<"$OUT")
+    SOUND=no
+    if grep -q 'Audio device: OK' <<<"$OUT"; then SOUND=yes; fi
+    case "$SYNTH" in
+        OK*)
+            if [ "$SOUND" = yes ]; then
+                passed 3 "speech synthesized, and a sound output device was found."
+            else
+                passed 3 "speech synthesized. No sound output device was found."
+                SKIP_WHY="no sound output device was found"
+            fi ;;
+        *)
+            SOUND=no
+            WARNED="test 3, the system voice produced no audio"
+            SKIP_WHY="the system voice produced no audio in test 3"
+            warn "the system voice produced no audio."
+            echo "OmniVox said: ${SYNTH:-no synthesis status}"
+            echo "This happens in sessions without a logged-in user."
+            echo "On your Mac, run the script again in Terminal,"
+            echo "or try M-x omnivox-select-voice in emacspeak." ;;
+    esac
 
     log "Self-test 4 of 7: Emacs is 29.1 or newer"
     emacs_new_enough "$EMACS_BIN" ||
         die "Self-test 4 failed: Emacs $EMACS_VERSION is too old. Install a \
 newer one: brew install $EMACS_FORMULA"
-    echo "Pass: Emacs $EMACS_VERSION."
+    passed 4 "Emacs $EMACS_VERSION."
 
     log "Self-test 5 of 7: Emacs loads the init file and finds OmniVox (no speech)"
     "$EMACS_BIN" -Q --batch -l "$INIT" --eval "$LOAD_CHECK" >>"$LOG" 2>&1 ||
         die "Self-test 5 failed: Emacs could not load $INIT, or emacspeak \
 does not find $OMNIVOX. Rerun the script to rebuild both. See $LOG"
-    echo "Pass: emacspeak and omnivox-voices load, and emacspeak finds the server."
+    passed 5 "emacspeak and omnivox-voices load, and emacspeak finds the server."
 
     log "Self-test 6 of 7: OmniVox is registered and the launcher is in place"
     for name in omnivox log-omnivox; do
@@ -563,7 +661,7 @@ does not find $OMNIVOX. Rerun the script to rebuild both. See $LOG"
     [ -x "$PREFIX/servers/log-omnivox" ] ||
         die "Self-test 6 failed: $PREFIX/servers/log-omnivox is missing. Rerun the script."
     [ -x "$LAUNCHER" ] || die "Self-test 6 failed: $LAUNCHER is missing. Rerun the script."
-    echo "Pass: both names are listed, and the launcher is executable."
+    passed 6 "both names are listed, and the launcher is executable."
 
     log "Self-test 7 of 7: the OmniVox server starts the way Emacs starts it"
     if [ "$SOUND" = yes ]; then
@@ -571,25 +669,42 @@ does not find $OMNIVOX. Rerun the script to rebuild both. See $LOG"
         limited 60 version "$OMNIVOX" >>"$LOG" 2>&1 ||
             die "Self-test 7 failed: the server did not start or exit cleanly. \
 Check the output device in System Settings, Sound, then rerun. See $LOG"
-        echo "Pass: the server spoke its version and exited cleanly."
-        TESTS="all 7 passed"
+        passed 7 "the server spoke its version and exited cleanly."
     else
-        echo "Skipped: the server needs a sound output device to start, and \
-OmniVox found none. Connect speakers or headphones, then rerun."
-        TESTS="6 of 7 passed; test 7 skipped, no sound output device"
+        SKIPPED="test 7, $SKIP_WHY"
+        echo "Skipped: $SKIP_WHY."
+        echo "The server needs a working voice and a sound output device."
+        if [ -z "$WARNED" ]; then
+            echo "Connect speakers or headphones, then rerun."
+        fi
     fi
+    TESTS="$PASS_COUNT of 7 passed"
+    if [ -n "$WARNED" ]; then TESTS="$TESTS, 1 warning"; fi
+    if [ -n "$SKIPPED" ]; then TESTS="$TESTS, 1 skipped"; fi
+    if [ "$PASS_COUNT" -eq 7 ]; then TESTS="all 7 passed"; fi
 else
     TESTS="skipped (--no-test)"
 fi
 
 # --------------------------------------------------------------------------
 log "Done: emacspeak is installed"
+echo "Self-tests: $TESTS"
+if [ "$RUN_TESTS" = yes ]; then
+    echo "Passed: tests $PASSED"
+    if [ -n "$WARNED" ]; then echo "Warning: $WARNED"; fi
+    if [ -n "$SKIPPED" ]; then echo "Skipped: $SKIPPED"; fi
+fi
+if [ "$EMACS_ROUTE" = plus ]; then
+    EMACS_NOTE="Emacs.app is in $BREW_PREFIX/opt/$EMACS_PLUS_FORMULA; the launcher runs Emacs in the terminal."
+else
+    EMACS_NOTE="For Emacs.app as well, rerun with --emacs-plus."
+fi
 cat <<DONE
-Self-tests: $TESTS
 Emacspeak is in $PREFIX
 Speech server: OmniVox $OMNIVOX_VERSION, $ROUTE_TEXT
 OmniVox is in $PREFIX/servers
 Emacs $EMACS_VERSION: $EMACS_BIN
+$EMACS_NOTE
 Launcher: $LAUNCHER
 Build log: $LOG
 
