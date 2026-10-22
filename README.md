@@ -98,7 +98,7 @@ launcher, put this at the very top of `~/.emacs`:
 options (`--help` lists them), self-tests that need no sound card, and a
 rerun that updates and rebuilds. The Linux scripts install espeak-ng speech
 only; for the Eloquence (Voxin) or DECtalk voices on Linux, use
-`install-emacspeak-voxin.sh`. The macOS script uses OmniVox.
+`install-emacspeak-voxin.sh`. The macOS and Windows scripts use OmniVox.
 
 - **Fedora 43, 44 or 45:** `sudo bash scripts/install-emacspeak-fedora.sh`.
   Fedora's default `tcl` is Tcl 9, which emacspeak cannot use. The script
@@ -127,6 +127,17 @@ only; for the Eloquence (Voxin) or DECtalk voices on Linux, use
   GitHub Actions workflow in `.github/workflows/` runs it on Apple silicon
   and Intel runners, where the system voice gives no audio, so its
   speech self-tests report a warning and a skip there.
+- **Windows 10 or 11, with OmniVox:** in PowerShell, as your normal user,
+  `powershell -ExecutionPolicy Bypass -File scripts\install-emacspeak-windows.ps1`.
+  It installs GNU Emacs with winget when none is 29.1 or newer, clones and
+  byte-compiles emacspeak into `.emacspeak` in your profile folder,
+  installs OmniVox's checksum-verified release, and writes an
+  `emacspeak.cmd` launcher that starts GUI Emacs. It changes nothing
+  outside that folder unless you pass `-AddToPath`, `-SetHome` or
+  `-StartMenuShortcut`. NVDA and JAWS speak over emacspeak unless you
+  pause them; the summary says how. Tested with a portable Emacs 30.2;
+  the GitHub Actions workflow in `.github/workflows/` runs it on x64 and
+  arm64 runners.
 
 ## Quick start with Docker (Windows, macOS, or any Linux)
 

@@ -1,0 +1,114 @@
+# Runs scripts/install-emacspeak-windows.ps1 on GitHub's Windows runners,
+# with its self-tests. It runs only on GitHub, once the owner pushes this
+# file; nothing here runs on a local machine.
+#
+# Runners have no speakers, so self-test 8 (the server speaking) normally
+# reports "skipped". Self-test 6 needs no sound: it starts OmniVox from
+# Emacs by the bare name servers/omnivox, the way emacspeak starts its
+# server. Each job runs the installer twice, the second time on the
+# update path with the three opt-in switches, and uploads the installer's
+# log, which holds OmniVox's --list-voices and --check reports.
+name: Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - scripts/install-emacspeak-windows.ps1
+      - .github/workflows/windows-installer.yml
+
+permissions:
+  contents: read
+
+env:
+  # The official GNU Emacs zip for Windows, for the jobs that pass
+  # -EmacsPath. Its SHA-256 is the one in GNU's emacs-30.2-sha256sum.txt.
+  EMACS_ZIP_URL: https://ftp.gnu.org/gnu/emacs/windows/emacs-30/emacs-30.2.zip
+  EMACS_ZIP_SHA256: 414d3a1a21147af257ebd98bdd15976fdcb5ed0563f6de89f76d4a4b5dad9c72
+
+jobs:
+  install:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The default route: the installer finds no Emacs and installs
+          # GNU.Emacs with winget. If the runner image lacks winget, this
+          # job stops at the installer's "winget is not available" error.
+          - name: x64, Emacs from winget, Windows PowerShell 5.1
+            os: windows-latest
+            emacs: winget
+            ps: powershell
+            options: ""
+          - name: x64, GNU Emacs zip, PowerShell 7
+            os: windows-latest
+            emacs: zip
+            ps: pwsh
+            options: -SkipDeps -EmacsPath "%RUNNER_TEMP%\emacs\bin\emacs.exe"
+          # GNU builds Emacs for x64 only; Windows 11 runs it emulated,
+          # while OmniVox comes as its native arm64 build.
+          - name: arm64, GNU Emacs zip, Windows PowerShell 5.1
+            os: windows-11-arm
+            emacs: zip
+            ps: powershell
+            options: -SkipDeps -EmacsPath "%RUNNER_TEMP%\emacs\bin\emacs.exe"
+          # The runner image has Rust, CMake, LLVM and Visual Studio.
+          - name: x64, OmniVox from source, Windows PowerShell 5.1
+            os: windows-latest
+            emacs: zip
+            ps: powershell
+            options: -OmnivoxSource -SkipDeps -EmacsPath "%RUNNER_TEMP%\emacs\bin\emacs.exe"
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Check the syntax with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            "$PWD\scripts\install-emacspeak-windows.ps1", [ref]$tokens, [ref]$errors)
+          foreach ($e in $errors) { Write-Host "line $($e.Extent.StartLineNumber): $($e.Message)" }
+          if (@($errors).Count -gt 0) { exit 1 }
+          Write-Host 'No parse errors.'
+
+      - name: Show the winget version
+        if: matrix.emacs == 'winget'
+        continue-on-error: true
+        shell: cmd
+        run: winget --version
+
+      - name: Download and unpack the GNU Emacs zip
+        if: matrix.emacs == 'zip'
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          $zip = Join-Path $env:RUNNER_TEMP 'emacs.zip'
+          Invoke-WebRequest -Uri $env:EMACS_ZIP_URL -OutFile $zip
+          $got = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($got -ne $env:EMACS_ZIP_SHA256) {
+            Write-Host "ERROR: checksum mismatch for the Emacs zip: got $got"
+            exit 1
+          }
+          Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $env:RUNNER_TEMP 'emacs')
+          Write-Host "Emacs unpacked; checksum verified: $got"
+
+      - name: Run the installer
+        shell: cmd
+        run: ${{ matrix.ps }} -NoProfile -ExecutionPolicy Bypass -File scripts\install-emacspeak-windows.ps1 ${{ matrix.options }}
+
+      - name: Run the installer again, the update path, with the opt-in switches
+        shell: cmd
+        run: ${{ matrix.ps }} -NoProfile -ExecutionPolicy Bypass -File scripts\install-emacspeak-windows.ps1 ${{ matrix.options }} -StartMenuShortcut -SetHome -AddToPath
+
+      - name: Upload the installer's log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: install-log-${{ strategy.job-index }}
+          path: ~/.emacspeak/install-emacspeak-windows.log
+          if-no-files-found: ignore
