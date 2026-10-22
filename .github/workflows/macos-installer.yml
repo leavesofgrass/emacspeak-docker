@@ -1,0 +1,71 @@
+# Runs scripts/install-emacspeak-macos.sh on GitHub's macOS runners, with
+# its self-tests. It runs only on GitHub, once the owner pushes this file;
+# nothing here runs on a local machine.
+#
+# Runners have no speakers, so self-test 7 (the server speaking) normally
+# reports "skipped"; the others need no sound. Each job uploads the
+# installer's build log, which holds OmniVox's --list-voices and --check
+# reports, as an artifact.
+name: macOS installer
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - scripts/install-emacspeak-macos.sh
+      - .github/workflows/macos-installer.yml
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The default route: prebuilt OmniVox, and emacs-plus@30, which
+          # the installer compiles with Homebrew (about 30 minutes).
+          - name: Apple silicon, prebuilt OmniVox
+            os: macos-15
+            emacs: emacs-plus
+            options: ""
+          # OmniVox cross-compiles its Intel binary and never runs it in its
+          # own CI, so this job is its first real run. Homebrew no longer
+          # builds Intel bottles, so Homebrew's plain Emacs goes in first to
+          # keep the job short; that also tests keeping an existing Emacs.
+          - name: Intel, prebuilt OmniVox
+            os: macos-15-intel
+            emacs: preinstalled
+            options: ""
+          - name: Apple silicon, OmniVox from source
+            os: macos-15
+            emacs: preinstalled
+            options: --omnivox-source
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Check the syntax with the bash that macOS ships
+        run: /bin/bash -n scripts/install-emacspeak-macos.sh
+
+      - name: Install Homebrew's Emacs first
+        if: matrix.emacs == 'preinstalled'
+        run: brew install emacs
+
+      - name: Run the installer
+        run: /bin/bash scripts/install-emacspeak-macos.sh ${{ matrix.options }}
+
+      - name: Run the installer again, the update path
+        run: /bin/bash scripts/install-emacspeak-macos.sh ${{ matrix.options }}
+
+      - name: Upload the build log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: install-log-${{ strategy.job-index }}
+          path: ~/Library/Logs/install-emacspeak-macos.log
+          if-no-files-found: ignore
