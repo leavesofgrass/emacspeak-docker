@@ -24,6 +24,11 @@ classic synthesizers many blind users grew up on, instead of espeak.
 Every step of all of this is documented — see [GUIDE.md](GUIDE.md) for
 how the pieces actually work.
 
+**Only want the installers?** They live on their own, without the Docker
+parts, in [emacspeak-installer](https://github.com/leavesofgrass/emacspeak-installer):
+clone it and run the script for your system. The same scripts are kept
+here too, because the Docker image uses them.
+
 ## Quick start on Linux
 
 **What you need:**
