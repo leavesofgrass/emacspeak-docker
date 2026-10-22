@@ -112,11 +112,13 @@ This is exactly what `scripts/install-emacspeak-voxin.sh` automates:
 (The Voxin archive is optional: `--with-dectalk` alone installs a
 DECtalk-only system, no license required, and the launcher's default voice
 follows what you installed. The script detects Debian, Arch, and Fedora
-families from `/etc/os-release` and adapts: package manager, TclX built
-from source where unpackaged (Arch, Fedora), a private Tcl 8.6 where the
-distro ships Tcl 9 (Fedora), the `[multilib]` repository enabled for
-Voxin's 32-bit engine (Arch), and the shim symlink placed in the family's
-trusted libdir.)
+families from `/etc/os-release` and adapts: package manager (on Arch, one
+full `pacman -Syu`, since Arch does not support partial upgrades), TclX
+built from source where unpackaged (Arch, into `/usr/lib/tclx8.6` with its
+header and man page under `/usr/local`), Fedora's own Tcl 8.6 packages
+(`tcl8`, `tcl8-devel`, `tclx`) where the default Tcl is 9, the
+`[multilib]` repository enabled for Voxin's 32-bit engine (Arch, before
+the upgrade), and the shim symlink placed in the family's trusted libdir.)
 
 1. **Packages.** `git make gcc g++ tcl tcl8.6 tcl8.6-dev tclx8.4
    libasound2-dev sox libsox-fmt-all pulseaudio-utils` plus, after
@@ -153,7 +155,10 @@ trusted libdir.)
    stack.
 7. **Build emacspeak.** Clone github.com/tvraman/emacspeak, `make config
    && make emacspeak` (byte-compiles the lisp; runs in place, no install
-   step), then `make -C servers/linux-outloud` to compile `atcleci.so`.
+   step), then run `make` inside `servers/linux-outloud` to compile
+   `atcleci.so`. Run each make from inside its folder rather than with
+   `make -C`: emacspeak's Makefiles pass `$(MAKEFLAGS)` on as plain words,
+   and GNU make 4.3 turns the `-w` that `-C` adds into a bogus target `w`.
 8. **Optional DECtalk.** Clone github.com/dectalk/dectalk (`develop`),
    `cd src && ./autogen.sh && ./configure && make -j`, copy `dist/` to
    `/opt/dectalk`, copy the C headers from `src/dapi/src/include/` to
@@ -243,10 +248,11 @@ adaptations:
    (Fedora did) can't run stock emacspeak servers at all: TclX doesn't
    compile against Tcl 9 (`TCL_PARSE_PART1` is gone), `atcleci.cpp`
    doesn't either (the `CONST` macro changed), and Fedora's packaged
-   tclx doesn't even load in its own tclsh 9. Since emacspeak launches
-   servers through their `#!/usr/bin/tclsh` shebang, the fix is a private
-   Tcl 8.6 (the installer builds one under `/opt/emacspeak-tcl`) with the
-   server shebangs rewritten to point at it.
+   tclx doesn't load in tclsh 9 (it is built for Fedora's Tcl 8.6). Since
+   emacspeak launches servers through their `#!/usr/bin/tclsh` shebang,
+   the fix is Tcl 8.6 beside Tcl 9 with the server shebangs rewritten to
+   point at it: on Fedora the installer uses the distro's `tcl8`,
+   `tcl8-devel` and `tclx` packages and `/usr/bin/tclsh8.6`.
 10. **tclsh lies about errors on stdin.** `echo 'package require Tclx' |
     tclsh` exits 0 even when the package is missing — errors on
     stdin-fed commands don't set the exit status. Any scripted probe

@@ -79,14 +79,16 @@ launcher, put this at the very top of `~/.emacs`:
 **Distribution notes.** The installer detects your family from
 `/etc/os-release` and handles the differences itself:
 
-- **Arch family** (Arch, CachyOS, EndeavourOS, Manjaro): TclX isn't in
-  the repos, so the script builds it from source; installing Voxin
-  enables the `[multilib]` repository if it isn't already (its engine
-  needs 32-bit glibc).
-- **Fedora family**: Fedora ships Tcl 9, which emacspeak's speech servers
-  cannot use, so the script builds a private Tcl 8.6 (plus TclX) under
-  `/opt/emacspeak-tcl` and points the servers at it. Automatic, but
-  that's why the Fedora install takes a few minutes longer.
+- **Arch family** (Arch, CachyOS, EndeavourOS, Manjaro): the package step
+  is one full system upgrade (`pacman -Syu`), as Arch requires. TclX isn't
+  in the repos, so the script builds it from source into
+  `/usr/lib/tclx8.6`; installing Voxin enables the `[multilib]` repository
+  first if it isn't already (its engine needs 32-bit glibc).
+- **Fedora family**: Fedora's default Tcl is Tcl 9, which emacspeak's
+  speech servers cannot use, so the script installs Fedora's own Tcl 8.6
+  packages (`tcl8`, `tcl8-devel` and `tclx`) and points the servers at
+  `tclsh8.6`. It stops if `tcl-devel` (the Tcl 9 headers) is installed,
+  because that package conflicts with `tcl8-devel`.
 - **Anything else**: install the equivalents of Emacs 29+, git, gcc/g++,
   make, Tcl 8.6 with headers, TclX, ALSA headers, sox, pulseaudio-utils,
   and 32-bit glibc/libstdc++ (for Voxin), then rerun with `--skip-deps`.

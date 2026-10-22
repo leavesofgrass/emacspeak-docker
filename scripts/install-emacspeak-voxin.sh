@@ -37,13 +37,35 @@ SKIP_DEPS=no
 
 # Emacspeak's servers and glue need Tcl 8.6: Tcl 9 removed APIs that both
 # TclX and emacspeak's C glue still use. Where the distro has moved to
-# Tcl 9 (Fedora), we build a private 8.6 here and point the servers at it.
-PRIVATE_TCL=/opt/emacspeak-tcl
-TCL86_URL=https://github.com/tcltk/tcl/archive/refs/tags/core-8-6-16.tar.gz
+# Tcl 9 (Fedora), we use its Tcl 8.6 packages and point the servers at them.
+# TclX is pinned to a release tag, which ships its configure script.
 TCLX_URL=https://github.com/flightaware/tclx
+TCLX_REF=v8.6.3
+# On Arch, pacman's output goes to this log instead of the screen.
+LOG=/var/log/install-emacspeak-voxin.log
 
 log() { printf '\n==> %s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+# Run a noisy command with its output in $LOG only. If it fails, show the
+# end of the log, then the error, so the last line on screen names the problem.
+logged() { # $1 = what it does, then the command
+    logged_what=$1; shift
+    if ! "$@" >>"$LOG" 2>&1; then
+        printf '\nLast lines of %s:\n' "$LOG" >&2
+        tail -n 20 "$LOG" >&2
+        die "$logged_what failed. The full output is in $LOG"
+    fi
+}
+
+# Emacspeak's Makefiles hand $(MAKEFLAGS) to their sub-makes as plain words.
+# GNU make 4.3 writes the -w that "make -C" adds as a bare "w", which the
+# sub-make then takes for a target and fails; a MAKEFLAGS such as -s set in
+# the environment does the same. So every make here runs from inside its
+# directory, without flags inherited from outside.
+make_in() { # $1 = directory, then the make arguments
+    ( cd "$1" && shift && env -u MAKEFLAGS -u MFLAGS make "$@" )
+}
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -112,7 +134,8 @@ install_deps_debian() {
 }
 
 install_deps_arch() {
-    # Voxin's 32-bit engine needs the multilib repo for lib32 glibc.
+    # Voxin's 32-bit engine needs the multilib repo for lib32 glibc. It is
+    # enabled first, so the one pacman -Syu below also syncs it.
     if [ -n "$VOXIN_TGZ" ] && ! grep -q '^\[multilib\]' /etc/pacman.conf; then
         log "Enabling the [multilib] repository (needed for Voxin's 32-bit engine)"
         # Uncomment the standard commented block if present...
@@ -124,20 +147,35 @@ install_deps_arch() {
                 >> /etc/pacman.conf
         fi
     fi
-    pacman -Sy --noconfirm --needed \
-        git curl make gcc file unzip xz autoconf automake pkgconf \
-        tcl alsa-lib sox libpulse
-    command -v emacs >/dev/null || pacman -S --noconfirm --needed emacs-nox
-    [ -n "$VOXIN_TGZ" ] && pacman -S --noconfirm --needed lib32-glibc lib32-gcc-libs
+    # Arch does not support partial upgrades: refreshing the package lists
+    # without upgrading (pacman -Sy) and then installing can break other
+    # programs. So everything is installed in one full upgrade (-Syu).
+    pkgs="git curl make gcc file unzip xz autoconf automake pkgconf"
+    pkgs="$pkgs tcl alsa-lib sox libpulse"
+    command -v emacs >/dev/null || pkgs="$pkgs emacs-nox"
+    [ -z "$VOXIN_TGZ" ] || pkgs="$pkgs lib32-glibc lib32-gcc-libs"
+    : > "$LOG"
+    echo "  The whole system is upgraded too: Arch supports only full upgrades."
+    echo "  Packages: $pkgs"
+    echo "  This takes a few minutes. pacman's output goes to $LOG"
+    # $pkgs is unquoted on purpose: one word per package.
+    logged "pacman -Syu" pacman -Syu --noconfirm --needed --noprogressbar $pkgs
     return 0
 }
 
 install_deps_fedora() {
-    # Note: no distro tcl here on purpose -- Fedora ships Tcl 9, which
-    # emacspeak's stack cannot use; we build a private Tcl 8.6 below.
+    # Fedora's tcl is Tcl 9, which emacspeak's stack cannot use. Fedora
+    # still ships Tcl 8.6 as tcl8, with tcl8-devel and a tclx built for it.
+    # tcl8-devel and tcl-devel (the Tcl 9 headers) both own /usr/include/tcl.h.
+    if rpm -q --quiet tcl-devel; then
+        die "tcl-devel (the Tcl 9 headers) is installed and conflicts with \
+tcl8-devel, which this build needs. Remove it with: dnf remove tcl-devel, \
+then rerun this script."
+    fi
     dnf install -y \
         git curl make gcc gcc-c++ file unzip xz autoconf automake \
-        pkgconf-pkg-config alsa-lib-devel sox pulseaudio-utils
+        pkgconf-pkg-config tcl8 tcl8-devel tclx \
+        alsa-lib-devel sox pulseaudio-utils
     command -v emacs >/dev/null || dnf install -y emacs
     [ -n "$VOXIN_TGZ" ] && dnf install -y glibc.i686 libstdc++.i686
     [ "$WITH_DECTALK" = yes ] && dnf install -y pulseaudio-libs-devel
@@ -158,8 +196,8 @@ Install a newer Emacs and rerun."
 # 2. A usable Tcl 8.6 + TclX.
 #    - Debian: everything comes from apt (tcl8.6, tclx8.4). Done.
 #    - Arch: tcl is 8.6 but TclX isn't packaged; build TclX from source.
-#    - Fedora: distro tcl is 9.x; build private Tcl 8.6 AND TclX from
-#      source, and later point the emacspeak servers' shebangs at it.
+#    - Fedora: distro tcl is 9.x; tcl8, tcl8-devel and tclx come from dnf,
+#      and later the emacspeak servers' shebangs are pointed at tclsh8.6.
 TCLSH=/usr/bin/tclsh
 TCL_CFLAGS="-I/usr/include/tcl8.6"
 TCL_LIBS="-ltcl8.6"
@@ -170,40 +208,42 @@ has_tclx() {
     echo 'if {[catch {package require Tclx}]} {exit 1}' | "$TCLSH" >/dev/null 2>&1
 }
 
-build_tclx() { # $1 = tclConfig.sh dir, $2 = install prefix
-    log "Building TclX from source ($TCLX_URL)"
+build_tclx() { # $1 = tclConfig.sh dir, $2 = install prefix, $3 = libdir
+    log "Building TclX ${TCLX_REF#v} from source ($TCLX_URL, tag $TCLX_REF)"
     TCLXSRC=$(mktemp -d)
-    git clone -q --depth 1 "$TCLX_URL" "$TCLXSRC/tclx"
+    git -c advice.detachedHead=false clone -q --depth 1 --branch "$TCLX_REF" \
+        "$TCLX_URL" "$TCLXSRC/tclx"
     ( cd "$TCLXSRC/tclx" \
       && { [ -x configure ] || autoreconf -fi; } \
       && ./configure --with-tcl="$1" --prefix="$2" --exec-prefix="$2" \
-      && make && make install )
+             --libdir="$3" \
+      && make_in . && make_in . install )
     rm -rf "$TCLXSRC"
 }
 
 case "$FAMILY" in
     arch)
         TCL_CFLAGS=""   # tcl.h lives directly in /usr/include
-        has_tclx || build_tclx /usr/lib /usr
+        # Arch's tclsh looks for packages only in /usr/lib/tcl8.6 and /usr/lib
+        # (its auto_path; /usr/local is not on it), so --libdir=/usr/lib puts
+        # TclX's package folder in /usr/lib/tclx8.6, while its header and man
+        # page go under /usr/local. pacman does not track these files.
+        if ! has_tclx; then
+            build_tclx /usr/lib /usr/local /usr/lib
+            [ -f /usr/lib/tclx8.6/pkgIndex.tcl ] || \
+                die "TclX was installed, but /usr/lib/tclx8.6/pkgIndex.tcl is missing"
+            echo "  TclX is in /usr/lib/tclx8.6; pacman does not track it."
+        fi
         ;;
     fedora)
-        if [ ! -x "$PRIVATE_TCL/bin/tclsh" ]; then
-            log "Building private Tcl 8.6 in $PRIVATE_TCL (distro Tcl is 9.x)"
-            # The source tree stays in place: tclConfig.sh records it as
-            # TCL_SRC_DIR, where TclX's configure finds private headers.
-            mkdir -p "$PRIVATE_TCL/src"
-            curl -fsSL "$TCL86_URL" | tar -xz -C "$PRIVATE_TCL/src"
-            ( cd "$PRIVATE_TCL"/src/tcl-core-8-6-*/unix \
-              && ./configure --prefix="$PRIVATE_TCL" >/dev/null \
-              && make -j"$(nproc)" >/dev/null && make install >/dev/null )
-            ln -sf tclsh8.6 "$PRIVATE_TCL/bin/tclsh"
-            echo "$PRIVATE_TCL/lib" > /etc/ld.so.conf.d/emacspeak-tcl.conf
-            ldconfig
-        fi
-        TCLSH="$PRIVATE_TCL/bin/tclsh"
-        TCL_CFLAGS="-I$PRIVATE_TCL/include"
-        TCL_LIBS="-L$PRIVATE_TCL/lib -ltcl8.6"
-        has_tclx || build_tclx "$PRIVATE_TCL/lib" "$PRIVATE_TCL"
+        # tcl8 installs Tcl 8.6 beside the default Tcl 9, run as tclsh8.6,
+        # and tcl8-devel puts its headers straight into /usr/include.
+        TCLSH=/usr/bin/tclsh8.6
+        TCL_CFLAGS=""
+        [ -x "$TCLSH" ] || die "$TCLSH not found. Install Tcl 8.6: dnf install tcl8"
+        grep -q 'define TCL_VERSION[[:space:]]*"8.6"' /usr/include/tcl.h 2>/dev/null || \
+            die "/usr/include/tcl.h is missing or is not Tcl 8.6. Install tcl8-devel."
+        has_tclx || die "TclX does not load in $TCLSH. Install it: dnf install tclx"
         ;;
 esac
 has_tclx || die "TclX still does not load in $TCLSH; emacspeak's servers need it."
@@ -300,10 +340,11 @@ else
 fi
 
 log "Building emacspeak (byte-compiling the lisp)"
-( cd "$EMACSPEAK_DIR" && make config && make emacspeak )
+make_in "$EMACSPEAK_DIR" config
+make_in "$EMACSPEAK_DIR" emacspeak
 
-# The servers run via their "#!/usr/bin/tclsh" shebang. Where we built a
-# private Tcl (Fedora), point them at it. Safe to rerun after upstream pulls.
+# The servers run via their "#!/usr/bin/tclsh" shebang. On Fedora, where
+# tclsh is Tcl 9, point them at tclsh8.6. Safe to rerun after upstream pulls.
 if [ "$TCLSH" != /usr/bin/tclsh ]; then
     log "Pointing emacspeak server shebangs at $TCLSH"
     for f in "$EMACSPEAK_DIR"/servers/*; do
@@ -314,7 +355,7 @@ if [ "$TCLSH" != /usr/bin/tclsh ]; then
 fi
 
 log "Building atcleci.so (Tcl glue that dlopens libibmeci.so, speaks via ALSA)"
-make -C "$EMACSPEAK_DIR/servers/linux-outloud" \
+make_in "$EMACSPEAK_DIR/servers/linux-outloud" \
     CFLAGS="-g -O2 -fPIC -DPIC -std=c++11 $TCL_CFLAGS" \
     LIBS="$TCL_LIBS -lasound -ldl"
 
@@ -328,7 +369,7 @@ if [ "$WITH_DECTALK" = yes ]; then
     ( cd "$DTKSRC/dectalk/src" \
       && ./autogen.sh \
       && ./configure CFLAGS="-O2 -fpermissive -Wno-implicit-function-declaration" \
-      && make -j"$(nproc)" )
+      && make_in . -j"$(nproc)" )
     mkdir -p /opt/dectalk
     cp -a "$DTKSRC/dectalk/dist/." /opt/dectalk/
     mkdir -p /opt/dectalk/include/dtk
@@ -342,7 +383,7 @@ if [ "$WITH_DECTALK" = yes ]; then
     # whose dictionary paths are already absolute /opt/dectalk/dic entries.
     cp "$EMACSPEAK_DIR/servers/software-dtk/DECtalk.conf" /opt/dectalk/DECtalk.conf
     log "Building tcldtk.so (Tcl glue for the dtk-soft server)"
-    make -C "$EMACSPEAK_DIR/servers/software-dtk" \
+    make_in "$EMACSPEAK_DIR/servers/software-dtk" \
         CFLAGS="-g -O2 -fPIC -DPIC $TCL_CFLAGS -I/opt/dectalk/include" \
         LDFLAGS="-L/opt/dectalk/lib" \
         LIBS="$TCL_LIBS -ltts -ltts_us -ldl"
