@@ -92,6 +92,12 @@ launcher, put this at the very top of `~/.emacs`:
   and 32-bit glibc/libstdc++ (for Voxin), then rerun with `--skip-deps`.
   Everything after the package step is distro-independent.
 
+**Fedora quick path (espeak only).** To get emacspeak talking with espeak-ng
+on Fedora 43, 44 or 45, run `sudo bash scripts/install-emacspeak-fedora.sh`.
+It installs Fedora's own Tcl 8.6 packages (`tcl8`, `tcl8-devel`, `tclx`),
+builds emacspeak and its espeak server against them, and self-tests. For
+the Eloquence (Voxin) or DECtalk voices, use `install-emacspeak-voxin.sh`.
+
 ## Quick start with Docker (Windows, macOS, or any Linux)
 
 The container holds emacspeak, DECtalk, and (after a one-time step) your
