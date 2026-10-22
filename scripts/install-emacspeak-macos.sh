@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
-# install-emacspeak-macos.sh: emacspeak with OmniVox speech on macOS.
+# install-emacspeak-macos.sh: emacspeak with real speech on macOS.
 #
-# OmniVox (https://github.com/robertmeta/omnivox) is an emacspeak speech
-# server written in Rust, a drop-in replacement for SwiftMac. On macOS it
-# speaks with the system voices through AVSpeechSynthesizer. This script
-# installs OmniVox's prebuilt release (checksum verified) or builds it from
-# source, clones and byte-compiles emacspeak, registers OmniVox as a speech
-# server, and writes an emacspeak launcher.
+# It installs one or more speech engines, chosen with --speech or a menu:
+#   omnivox    the macOS system voices through OmniVox, an emacspeak speech
+#              server written in Rust (https://github.com/robertmeta/omnivox),
+#              from its prebuilt release (checksum verified) or from source;
+#   espeak     the espeak-ng voices through OmniVox's built-in espeak-ng
+#              engine, with the voice data from Homebrew's espeak-ng;
+#   swiftmac   the macOS system voices through emacspeak's own Swift server,
+#              built with the Swift that Xcode and its Command Line Tools ship;
+#   tclespeak  espeak-ng through emacspeak's own Tcl espeak server, on
+#              Homebrew's Tcl 8.6, with TclX built from source.
+# It clones and byte-compiles emacspeak, registers OmniVox as a speech
+# server, writes an init file and an emacspeak launcher, and tests each
+# chosen engine.
 #
 # Run it as your normal user, never with sudo: Homebrew refuses to run as
 # root, and everything goes into your home folder and Homebrew's folder.
@@ -23,6 +30,7 @@ REPO=https://github.com/tvraman/emacspeak.git
 REF=master
 SKIP_DEPS=no
 RUN_TESTS=yes
+SPEECH=""
 OMNIVOX_ROUTE=prebuilt
 OMNIVOX_VERSION=""
 OMNIVOX_REPO=robertmeta/omnivox
@@ -36,6 +44,16 @@ EMACS_FORMULA=emacs
 # --emacs-plus installs this instead, for people who also want Emacs.app.
 EMACS_PLUS_TAP=d12frosted/emacs-plus
 EMACS_PLUS_FORMULA=emacs-plus@30
+# emacspeak's Tcl servers need Tcl 8.6, and Homebrew's tcl-tk is Tcl 9, so
+# the Tcl espeak server runs on tcl-tk@8. Homebrew has no TclX, so it is
+# built from this release tag, which ships its configure script.
+TCL_FORMULA=tcl-tk@8
+TCLX_URL=https://github.com/flightaware/tclx.git
+TCLX_REF=v8.6.3
+# The speech engines, in menu order. The default is the one used when
+# nothing else says which engines to install.
+ENGINES="omnivox espeak swiftmac tclespeak"
+DEFAULT_ENGINE=omnivox
 LOG=$HOME/Library/Logs/install-emacspeak-macos.log
 MARKER="Written by install-emacspeak-macos.sh"
 
@@ -43,11 +61,18 @@ usage() {
     cat <<USAGE
 Usage: bash install-emacspeak-macos.sh [options]
 
-Installs emacspeak with OmniVox speech on macOS 13 or newer.
+Installs emacspeak with real speech on macOS 13 or newer.
 Run it as your normal user, not with sudo. It needs Homebrew.
-Run it again later to update emacspeak and OmniVox.
+Run it again later to update emacspeak and its speech engines.
 
 Options:
+  --speech LIST          speech engines, comma-separated, in order of
+                         preference: omnivox, espeak, swiftmac, tclespeak,
+                         or all. The first one is the launcher's default.
+                         --speech list describes each engine.
+                         Without it, the script reuses the engines chosen
+                         last time, or asks with a menu, or takes omnivox
+                         when there is no terminal to ask on.
   --prefix DIR           where emacspeak is cloned and built
                          (default $PREFIX)
   --repo URL             emacspeak git repository (default $REPO)
@@ -59,15 +84,17 @@ Options:
   --emacs-plus           use $EMACS_PLUS_FORMULA, which includes Emacs.app,
                          from the $EMACS_PLUS_TAP tap, instead of
                          Homebrew's emacs. This trusts that whole tap.
-  --skip-deps            do not run brew; you installed Emacs
-                         (and cmake and Rust) yourself
+  --skip-deps            do not run brew; you installed Emacs, and what
+                         the chosen engines need, yourself
   --no-test              skip the self-tests at the end
   --help                 show this help
 
 Without Emacs 29.1 or newer, it installs Homebrew's emacs formula, a
 terminal Emacs. --omnivox-source also needs cmake and Rust, which it
-installs with Homebrew if they are missing. Build output goes to
-$LOG.
+installs with Homebrew if they are missing. espeak installs Homebrew's
+espeak-ng; tclespeak installs $TCL_FORMULA, espeak-ng and sox; swiftmac
+needs Swift 5.9 or newer, from Xcode or its Command Line Tools.
+Build output goes to $LOG.
 USAGE
 }
 
@@ -96,6 +123,10 @@ logged() {
 make_in() { # $1 = folder, the rest = make arguments
     local dir=$1; shift
     (cd "$dir" && unset MAKEFLAGS MFLAGS MAKELEVEL && make "$@")
+}
+in_dir() { # $1 = folder, the rest = a command to run there
+    local dir=$1; shift
+    (cd "$dir" && "$@")
 }
 
 # macOS has no timeout command. Run a command with INPUT on its standard
@@ -166,6 +197,17 @@ valid_version() {
     esac
 }
 
+# The Swift version, such as 6.1, from swift --version.
+swift_version() {
+    swift --version 2>>"$LOG" |
+        sed -n 's/.*Swift version \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | sed -n 1p
+}
+swift_new_enough() { # $1 = a version such as 5.9 or 6.1; swiftmac needs 5.9
+    local major=${1%%.*} minor=${1#*.}
+    minor=${minor%%.*}
+    [ "$major" -gt 5 ] || { [ "$major" -eq 5 ] && [ "$minor" -ge 9 ]; }
+}
+
 # Prints the latest OmniVox release, such as 1.3.0, from the GitHub API.
 # GitHub limits API calls without a token, which hits shared machines such
 # as CI runners, so a GH_TOKEN or GITHUB_TOKEN already in the environment
@@ -182,6 +224,135 @@ latest_omnivox_version() {
     fi | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\{0,1\}\([^"]*\)".*/\1/p'
 }
 
+# --------------------------------------------------------------------------
+# The speech engines.
+engine_title() { # the engine's name in messages, such as OmniVox
+    case "$1" in
+        omnivox) echo OmniVox ;;
+        *)       echo "$1" ;;
+    esac
+}
+engine_server() { # the emacspeak speech server the engine runs as
+    case "$1" in
+        omnivox|espeak) echo omnivox ;;
+        swiftmac)       echo swiftmac ;;
+        tclespeak)      echo espeak ;;
+    esac
+}
+engine_server_text() { # the server, as the summary names it
+    case "$1" in
+        espeak) echo "omnivox, with OMNIVOX_ENGINE=espeak" ;;
+        *)      engine_server "$1" ;;
+    esac
+}
+engine_about() {
+    case "$1" in
+        omnivox)   echo "the macOS system voices through OmniVox" ;;
+        espeak)    echo "espeak-ng voices through OmniVox's espeak-ng engine" ;;
+        swiftmac)  echo "the macOS system voices through emacspeak's swiftmac server" ;;
+        tclespeak) echo "espeak-ng through emacspeak's Tcl espeak server, the heavy route" ;;
+    esac
+}
+engine_needs() {
+    case "$1" in
+        omnivox)   echo "OmniVox's prebuilt release, or Rust and cmake with --omnivox-source" ;;
+        espeak)    echo "OmniVox, and Homebrew's espeak-ng for the voice data" ;;
+        swiftmac)  echo "Swift 5.9 or newer, from Xcode or its Command Line Tools; a few minutes to build" ;;
+        tclespeak) echo "Homebrew's $TCL_FORMULA, espeak-ng and sox, and TclX built from source; the slowest to install" ;;
+    esac
+}
+print_engines() {
+    local e
+    for e in $ENGINES; do
+        echo "$e: $(engine_about "$e"). Server: $(engine_server_text "$e"). Needs: $(engine_needs "$e")."
+    done
+}
+
+# The chosen engines live in SELECTED, space-separated, in order.
+SELECTED=""
+is_selected() { case " $SELECTED " in *" $1 "*) return 0 ;; esac; return 1; }
+add_engine() { is_selected "$1" || SELECTED="${SELECTED:+$SELECTED }$1"; }
+selected_titles() { # such as "OmniVox, swiftmac"
+    local e out=""
+    for e in $SELECTED; do out="${out:+$out, }$(engine_title "$e")"; done
+    printf '%s' "$out"
+}
+chosen_servers() { # the servers of the chosen engines, in order, each once
+    local e s out=""
+    for e in $SELECTED; do
+        s=$(engine_server "$e")
+        case " $out " in *" $s "*) ;; *) out="${out:+$out }$s" ;; esac
+    done
+    printf '%s' "$out"
+}
+commas() { printf '%s' "$1" | sed 's/ /, /g'; } # "a b" becomes "a, b"
+
+# Adds the engines named in $1 (separated by commas, spaces or newlines,
+# in any case) to SELECTED. On an unknown name, sets BAD and returns 1.
+BAD=""
+parse_engines() {
+    local rest word lower e
+    rest=$(printf '%s' "$1" | tr ',\t\n\r' '    ')
+    while :; do
+        rest=${rest#"${rest%%[! ]*}"}
+        [ -n "$rest" ] || break
+        word=${rest%% *}
+        rest=${rest#"$word"}
+        lower=$(printf '%s' "$word" | tr '[:upper:]' '[:lower:]')
+        case "$lower" in
+            omnivox|espeak|swiftmac|tclespeak) add_engine "$lower" ;;
+            all) for e in $ENGINES; do add_engine "$e"; done ;;
+            *) BAD=$word; return 1 ;;
+        esac
+    done
+}
+
+# The menu, shown when nothing else says which engines to install.
+ask_engines() {
+    local e i answer n picked bad
+    echo "Which speech engines should emacspeak get?"
+    i=0
+    for e in $ENGINES; do
+        i=$((i + 1))
+        if [ "$e" = "$DEFAULT_ENGINE" ]; then
+            echo "$i) $e: $(engine_about "$e") (default)"
+        else
+            echo "$i) $e: $(engine_about "$e")"
+        fi
+    done
+    while :; do
+        printf '%s' "Numbers separated by spaces, or Enter for the default [1]: "
+        if ! IFS= read -r answer; then
+            echo
+            die "no answer was given. Run the script again, or choose with --speech."
+        fi
+        answer=$(printf '%s' "$answer" | tr ',\t\r' '   ')
+        picked=""
+        bad=no
+        case "$answer" in *[!0-9\ ]*) bad=yes ;; esac
+        if [ "$bad" = no ]; then
+            # Only digits and spaces are left, so the words cannot glob.
+            for n in $answer; do
+                case "$n" in
+                    1) e=omnivox ;;
+                    2) e=espeak ;;
+                    3) e=swiftmac ;;
+                    4) e=tclespeak ;;
+                    *) bad=yes; break ;;
+                esac
+                case " $picked " in *" $e "*) ;; *) picked="${picked:+$picked }$e" ;; esac
+            done
+        fi
+        if [ "$bad" = yes ]; then
+            echo "Please answer with numbers from 1 to 4, such as: 1 3"
+            continue
+        fi
+        SELECTED=${picked:-$DEFAULT_ENGINE}
+        return 0
+    done
+}
+
+# --------------------------------------------------------------------------
 install_core_emacs() {
     log "No Emacs 29.1 or newer found: installing Homebrew's emacs formula"
     echo "It is a terminal Emacs, which is what the launcher runs."
@@ -229,8 +400,15 @@ command run it too."
     fi
 }
 
+brew_install() { # $1 = formula, $2 = what it is for
+    [ ! -d "$BREW_PREFIX/opt/$1" ] || return 0
+    log "Installing $1 with Homebrew ($2)"
+    logged "brew install $1" "$BREW" install "$1"
+}
+
 # servers/.servers is part of emacspeak's git tree. M-x dtk-select-server
 # offers the names listed there, and OmniVox's README asks for both names.
+# swiftmac and espeak are listed there already.
 register_omnivox() {
     local name
     [ -f "$SERVERS_LIST" ] || die "$SERVERS_LIST is missing; is $PREFIX an emacspeak clone?"
@@ -246,6 +424,96 @@ unregister_omnivox() {
     grep -qx -e omnivox -e log-omnivox "$SERVERS_LIST" || return 0
     grep -vx -e omnivox -e log-omnivox "$SERVERS_LIST" >"$SERVERS_LIST.new" || true
     mv -f "$SERVERS_LIST.new" "$SERVERS_LIST"
+}
+
+# Keeps the files this script adds to the clone out of git status.
+exclude_own_files() {
+    local file=$PREFIX/.git/info/exclude pattern
+    mkdir -p "$PREFIX/.git/info"
+    touch "$file"
+    [ -z "$(tail -c 1 "$file")" ] || printf '\n' >>"$file"
+    for pattern in /speech-engines /emacspeak-init.el /omnivox-init.el \
+                   /omnivox/ /tclx/ /servers/omnivox /servers/log-omnivox \
+                   /servers/ogg.framework/ /servers/vorbis.framework/ \
+                   /servers/native-espeak/tclespeak.dylib \
+                   /servers/native-espeak/tclespeak.o; do
+        grep -qxF "$pattern" "$file" || printf '%s\n' "$pattern" >>"$file"
+    done
+}
+
+# Replaces the first line of a file, keeping its mode and all other bytes.
+set_first_line() { # $1 = file, $2 = the new first line
+    cp -p "$1" "$1.new"
+    { printf '%s\n' "$2"; tail -n +2 "$1"; } >"$1.new"
+    mv -f "$1.new" "$1"
+}
+# emacspeak's Tcl servers start with #!/usr/bin/tclsh, Apple's old Tcl
+# without TclX. These point them at Homebrew's tclsh8.6, and back again
+# around a git update, so git sees unmodified files.
+point_tcl_servers() {
+    local f
+    TCL_SERVERS=""
+    for f in "$PREFIX"/servers/*; do
+        [ -f "$f" ] && [ ! -L "$f" ] || continue
+        case "$(head -n 1 "$f")" in
+            "#!$TCLSH") ;;
+            '#!'*tclsh*) set_first_line "$f" "#!$TCLSH" ;;
+            *) continue ;;
+        esac
+        TCL_SERVERS="$TCL_SERVERS ${f##*/}"
+    done
+}
+restore_tcl_servers() {
+    local f original
+    RESTORED_TCL=no
+    for f in "$PREFIX"/servers/*; do
+        [ -f "$f" ] && [ ! -L "$f" ] || continue
+        [ "$(head -n 1 "$f")" = "#!$TCLSH" ] || continue
+        original=$(git -C "$PREFIX" show "HEAD:servers/${f##*/}" 2>>"$LOG" | sed -n 1p) ||
+            continue
+        [ -n "$original" ] || continue
+        set_first_line "$f" "$original"
+        RESTORED_TCL=yes
+    done
+}
+
+# tclsh reading a script from its input exits 0 even after an error, so
+# these Tcl checks exit 1 themselves when something fails.
+tclx_version() {
+    limited 30 'if {[catch {puts [package require Tclx]}]} {exit 1}' "$TCLSH"
+}
+espeak_glue_check() { # $1 = path of tclespeak.dylib
+    limited 30 "if {[catch {load {$1}} err]} {puts stderr \$err; exit 1}
+if {[info commands say] ne \"say\"} {puts stderr \"no say command\"; exit 1}
+puts \"eSpeak NG [ttsVersion], voice data in [ttsDataPath]\"" "$TCLSH"
+}
+
+# Builds TclX from its release tag against Homebrew's Tcl 8.6, into
+# $TCLX_DIR. Tcl finds it there through TCLLIBPATH, which the launcher and
+# the init file set, so Homebrew's own folders stay untouched, and a brew
+# upgrade or reinstall of tcl-tk@8 cannot remove it.
+build_tclx() {
+    local src=$TCLX_DIR/src
+    HINT="Check the internet connection and the Xcode Command Line Tools, then rerun."
+    if [ -d "$src/.git" ]; then
+        log "Updating the TclX source in $src to $TCLX_REF"
+        logged "fetching TclX $TCLX_REF" git -C "$src" fetch -q --depth 1 origin \
+            "refs/tags/$TCLX_REF:refs/tags/$TCLX_REF"
+        logged "checking out TclX $TCLX_REF" git -C "$src" -c advice.detachedHead=false \
+            checkout -q "$TCLX_REF"
+    else
+        log "Cloning TclX ${TCLX_REF#v} into $src"
+        logged "cloning TclX" git -c advice.detachedHead=false clone -q --depth 1 \
+            --branch "$TCLX_REF" "$TCLX_URL" "$src"
+    fi
+    log "Building TclX ${TCLX_REF#v} against Homebrew's Tcl 8.6 (a minute or two)"
+    # --with-tclinclude names the 8.6 headers, with the private ones TclX
+    # needs. Without it, configure may take a Tcl 9 tcl.h in /usr/local.
+    logged "configuring TclX" in_dir "$src" ./configure \
+        --with-tcl="$TCL_KEG/lib" --with-tclinclude="$TCL_INCLUDE" \
+        --prefix="$TCLX_DIR" --exec-prefix="$TCLX_DIR" --libdir="$TCLX_DIR/lib"
+    logged "building TclX" make_in "$src"
+    logged "installing TclX into $TCLX_DIR" make_in "$src" install
 }
 
 # Installs an omnivox binary and omnivox-voices.el, then records the version.
@@ -316,9 +584,21 @@ out --omnivox-source to use the prebuilt release."
     place_omnivox "$src/target/release/omnivox" "$src/elisp/omnivox-voices.el"
 }
 
+# The status line under [synthesis] in OmniVox's --check report, such as
+# "OK - 9000 samples, ..." or "WARNING - synthesized empty buffer".
+synth_status() { # $1 = the report
+    awk '/^\[synthesis\]/ { getline; sub(/^[[:space:]]*Status:[[:space:]]*/, "");
+                            print; exit }' <<<"$1"
+}
+voice_count() { # $1 = the output of omnivox --list-voices
+    sed -n 's/^Found \([0-9][0-9]*\) voices.*/\1/p' <<<"$1"
+}
+
+# --------------------------------------------------------------------------
 need_value() { [ $# -ge 2 ] || die "$1 needs a value (try --help)"; }
 while [ $# -gt 0 ]; do
     case "$1" in
+        --speech)          need_value "$@"; SPEECH=$2; shift ;;
         --prefix)          need_value "$@"; PREFIX=$2; shift ;;
         --repo)            need_value "$@"; REPO=$2; shift ;;
         --ref)             need_value "$@"; REF=$2; shift ;;
@@ -332,6 +612,19 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
+if [ "$(printf '%s' "$SPEECH" | tr '[:upper:]' '[:lower:]')" = list ]; then
+    print_engines
+    exit 0
+fi
+if [ -n "$SPEECH" ]; then
+    if ! parse_engines "$SPEECH"; then
+        echo "The speech engines on macOS are:" >&2
+        print_engines >&2
+        die "unknown speech engine \"$BAD\". Use one or more of \
+$(echo "$ENGINES" | tr ' ' ','), separated by commas, or all, or list."
+    fi
+    [ -n "$SELECTED" ] || die "--speech needs at least one engine name (try --speech list)"
+fi
 [ -z "$OMNIVOX_VERSION" ] || valid_version "$OMNIVOX_VERSION" ||
     die "--omnivox-version needs a release number such as 1.3.0"
 # macOS realpath has no -m, so make the prefix absolute by hand.
@@ -342,7 +635,13 @@ case "$PREFIX" in
 esac
 SERVERS_LIST=$PREFIX/servers/.servers
 OMNIVOX_DIR=$PREFIX/omnivox
-INIT=$PREFIX/omnivox-init.el
+TCLX_DIR=$PREFIX/tclx
+GLUE=$PREFIX/servers/native-espeak/tclespeak.dylib
+RECORD=$PREFIX/speech-engines
+INIT=$PREFIX/emacspeak-init.el
+# The init file's name before the engine choice. Earlier runs wrote it, and
+# init files load it, so it now loads the new one.
+OLD_INIT=$PREFIX/omnivox-init.el
 
 # --------------------------------------------------------------------------
 log "Checking the system"
@@ -382,10 +681,58 @@ PATH="$BREW_PREFIX/bin:$BREW_PREFIX/sbin:$PATH"
 # Homebrew's bin folder belongs to you and is on PATH for Homebrew users,
 # so the launcher goes there and needs no sudo.
 LAUNCHER=$BREW_PREFIX/bin/emacspeak
+# tcl-tk@8 is keg-only: its tclsh8.6 is not linked into Homebrew's bin.
+TCL_KEG=$BREW_PREFIX/opt/$TCL_FORMULA
+TCLSH=$TCL_KEG/bin/tclsh8.6
+TCL_INCLUDE=$TCL_KEG/include/tcl-tk
 echo "Homebrew: $BREW_PREFIX"
 mkdir -p "${LOG%/*}"
 : >"$LOG"
 echo "Build log: $LOG"
+
+# --------------------------------------------------------------------------
+log "Choosing the speech engines"
+if [ -n "$SPEECH" ]; then
+    echo "Chosen with --speech."
+elif [ -f "$RECORD" ]; then
+    parse_engines "$(cat "$RECORD")" ||
+        die "$RECORD lists an unknown engine, \"$BAD\". Choose again with --speech."
+    [ -n "$SELECTED" ] || die "$RECORD is empty. Choose the engines with --speech."
+    echo "Reusing the engines chosen last time, from $RECORD."
+    echo "To choose others, run the script with --speech."
+elif [ -f "$OLD_INIT" ] && grep -q "$MARKER" "$OLD_INIT"; then
+    # Installed before there was a choice of engines: that was OmniVox.
+    SELECTED=omnivox
+    echo "Keeping OmniVox, which an earlier run of this script installed."
+    echo "To choose others, run the script with --speech."
+elif [ -t 0 ] && [ -t 1 ]; then
+    ask_engines
+else
+    SELECTED=$DEFAULT_ENGINE
+    echo "No terminal to ask on, so the default is used: $DEFAULT_ENGINE. Choose others with --speech."
+fi
+echo "Selected: $(selected_titles)."
+FIRST=${SELECTED%% *}
+DEFAULT_SERVER=$(engine_server "$FIRST")
+case "$FIRST" in
+    espeak)    echo "The launcher's default server: omnivox, with its espeak-ng engine." ;;
+    tclespeak) echo "The launcher's default server: espeak, emacspeak's Tcl espeak server." ;;
+    *)         echo "The launcher's default server: $DEFAULT_SERVER" ;;
+esac
+WANT_OMNIVOX=no
+if is_selected omnivox || is_selected espeak; then WANT_OMNIVOX=yes; fi
+if [ "$WANT_OMNIVOX" = no ] &&
+   { [ "$OMNIVOX_ROUTE" = source ] || [ -n "$OMNIVOX_VERSION" ]; }; then
+    warn "--omnivox-source and --omnivox-version apply to omnivox and espeak, \
+and neither is selected, so they change nothing."
+fi
+if is_selected tclespeak; then
+    case "$PREFIX" in
+        *' '*|*'{'*|*'}'*)
+            die "tclespeak needs a --prefix without spaces or braces: TclX's \
+build and Tcl's package path cannot use them. Choose another --prefix." ;;
+    esac
+fi
 
 # --------------------------------------------------------------------------
 if [ "$SKIP_DEPS" = no ]; then
@@ -397,7 +744,7 @@ if [ "$SKIP_DEPS" = no ]; then
     else
         install_core_emacs
     fi
-    if [ "$OMNIVOX_ROUTE" = source ]; then
+    if [ "$WANT_OMNIVOX" = yes ] && [ "$OMNIVOX_ROUTE" = source ]; then
         if ! command -v cmake >/dev/null; then
             log "Installing cmake with Homebrew (OmniVox's source build needs it)"
             logged "brew install cmake" "$BREW" install cmake
@@ -406,6 +753,32 @@ if [ "$SKIP_DEPS" = no ]; then
         if ! find_cargo; then
             log "Installing Rust with Homebrew (OmniVox's source build needs it)"
             logged "brew install rust" "$BREW" install rust
+        fi
+    fi
+    if is_selected espeak || is_selected tclespeak; then
+        brew_install espeak-ng "the espeak-ng voices and their data"
+    fi
+    if is_selected tclespeak; then
+        if [ ! -d "$TCL_KEG" ]; then
+            log "Installing $TCL_FORMULA with Homebrew (Tcl 8.6 for the Tcl espeak server)"
+            echo "Homebrew marks $TCL_FORMULA deprecated: Tcl 8.6 has reached its end of life."
+            echo "Homebrew plans to disable it on January 1, 2028; until then it installs."
+            HINT="If Homebrew says $TCL_FORMULA is disabled, it no longer offers \
+Tcl 8.6, which the Tcl espeak server needs. Leave tclespeak out of --speech."
+            logged "brew install $TCL_FORMULA" "$BREW" install "$TCL_FORMULA"
+            HINT="Run brew doctor, fix what it reports, then rerun this script."
+        fi
+        if [ ! -d "$BREW_PREFIX/opt/sox" ]; then
+            log "Installing sox with Homebrew (it plays the Tcl espeak server's auditory icons)"
+            if [ "$ARCH" = x64 ]; then
+                warn "Homebrew may have no prebuilt sox for Intel Macs, so it \
+may compile sox and its libraries, which can take a while."
+            fi
+            # Icons are a nicety: the server speaks without them.
+            if ! "$BREW" install sox >>"$LOG" 2>&1; then
+                warn "brew install sox failed (see $LOG), so the Tcl espeak \
+server's auditory icons stay silent. To add them later: brew install sox, then rerun."
+            fi
         fi
     fi
 fi
@@ -435,7 +808,7 @@ for tool in git make curl shasum tar; do
     command -v "$tool" >/dev/null ||
         die "$tool not found. Install the Xcode Command Line Tools: xcode-select --install"
 done
-if [ "$OMNIVOX_ROUTE" = source ]; then
+if [ "$WANT_OMNIVOX" = yes ] && [ "$OMNIVOX_ROUTE" = source ]; then
     command -v cmake >/dev/null || die "cmake not found. Install it: brew install cmake"
     find_cargo ||
         die "Rust (cargo) not found. Install it from https://rustup.rs or with: brew install rust"
@@ -448,26 +821,67 @@ if [ "$OMNIVOX_ROUTE" = source ]; then
 Update it: rustup update, or brew upgrade rust"
     echo "Rust $RUSTC_VERSION and cmake found."
 fi
+if is_selected espeak || is_selected tclespeak; then
+    [ -f "$BREW_PREFIX/share/espeak-ng-data/phontab" ] ||
+        die "espeak-ng's voice data is missing from $BREW_PREFIX/share/espeak-ng-data. \
+Install it: brew install espeak-ng, or rerun without --skip-deps"
+    echo "espeak-ng voice data found in $BREW_PREFIX/share/espeak-ng-data."
+fi
+SWIFT_VERSION=""
+if is_selected swiftmac; then
+    command -v swift >/dev/null ||
+        die "Swift not found, and swiftmac needs Swift 5.9 or newer. The Xcode \
+Command Line Tools include it: install them with xcode-select --install, or \
+install Xcode, then rerun. Or leave swiftmac out of --speech."
+    SWIFT_VERSION=$(swift_version) || SWIFT_VERSION=""
+    [ -n "$SWIFT_VERSION" ] ||
+        die "swift --version did not say which Swift this is. Reinstall the \
+Command Line Tools (xcode-select --install), then rerun. See $LOG"
+    swift_new_enough "$SWIFT_VERSION" ||
+        die "swiftmac needs Swift 5.9 or newer, and this is Swift $SWIFT_VERSION. \
+Update Xcode or its Command Line Tools with Software Update, then rerun."
+    echo "Swift $SWIFT_VERSION: new enough for swiftmac."
+fi
+if is_selected tclespeak; then
+    [ -x "$TCLSH" ] ||
+        die "$TCL_FORMULA is not installed: $TCLSH is missing. Install it: brew \
+install $TCL_FORMULA, or rerun without --skip-deps"
+    [ -f "$TCL_KEG/lib/tclConfig.sh" ] ||
+        die "$TCL_KEG/lib/tclConfig.sh is missing. Reinstall Tcl 8.6: brew reinstall $TCL_FORMULA"
+    grep -q 'define TCL_VERSION[[:space:]]*"8.6"' "$TCL_INCLUDE/tcl.h" 2>/dev/null ||
+        die "$TCL_INCLUDE/tcl.h is missing or is not Tcl 8.6. Reinstall it: brew \
+reinstall $TCL_FORMULA"
+    [ -r "$BREW_PREFIX/include/espeak-ng/speak_lib.h" ] ||
+        die "espeak-ng's headers are missing from $BREW_PREFIX/include. Install \
+it: brew install espeak-ng"
+    echo "Tcl 8.6 from $TCL_FORMULA, and the espeak-ng headers, found."
+fi
 
 # --------------------------------------------------------------------------
 OLD_HEAD=""
+RESTORED_TCL=no
 HINT="Check the internet connection and the --repo and --ref values. For an \
 update, also undo your own changes in $PREFIX (git -C $PREFIX status)."
 if [ -d "$PREFIX/.git" ]; then
     log "Updating emacspeak in $PREFIX from $REPO ($REF)"
-    # Undo this script's change to servers/.servers first, so git sees an
-    # unmodified file. The names are added back after the update.
+    # Undo this script's changes first, so git sees unmodified files:
+    # OmniVox's two names in servers/.servers, and the Tcl servers' first
+    # lines. Both come back after the update.
     unregister_omnivox
+    restore_tcl_servers
     OLD_HEAD=$(git -C "$PREFIX" rev-parse HEAD)
     logged "updating the clone in $PREFIX" \
         git -C "$PREFIX" pull -q --ff-only "$REPO" "$REF"
-    register_omnivox
+    # What earlier runs installed stays usable, chosen this time or not.
+    if [ -x "$PREFIX/servers/omnivox" ]; then register_omnivox; fi
+    if [ "$RESTORED_TCL" = yes ] && [ -x "$TCLSH" ]; then point_tcl_servers; fi
 elif [ -e "$PREFIX" ] && [ -n "$(ls -A "$PREFIX")" ]; then
     die "$PREFIX exists but is not a git clone of emacspeak. Move it away or use --prefix."
 else
     log "Cloning emacspeak ($REF) from $REPO into $PREFIX"
     logged "git clone" git clone -q --depth 1 --branch "$REF" "$REPO" "$PREFIX"
 fi
+exclude_own_files
 echo "Emacspeak source: $(git -C "$PREFIX" log -1 --format='commit %h of %cd' --date=short)"
 
 log "Configuring emacspeak (make config)"
@@ -486,69 +900,224 @@ log "Byte-compiling emacspeak's Lisp (make emacspeak, a few minutes)"
 logged "make emacspeak" make_in "$PREFIX" emacspeak
 
 # --------------------------------------------------------------------------
-mkdir -p "$OMNIVOX_DIR"
+# OmniVox, for the omnivox and espeak engines.
 INSTALLED=$(cat "$OMNIVOX_DIR/installed-version" 2>/dev/null || true)
-log "Choosing the OmniVox release"
-# Latest by default, so rerunning this script also updates OmniVox. The
-# checksum file comes from the same release: it catches a damaged download.
-if [ -n "$OMNIVOX_VERSION" ]; then
-    echo "OmniVox $OMNIVOX_VERSION, as asked with --omnivox-version."
-elif OMNIVOX_VERSION=$(latest_omnivox_version) && valid_version "$OMNIVOX_VERSION"; then
-    echo "Latest OmniVox release: $OMNIVOX_VERSION"
+ROUTE_TEXT=""
+if [ "$WANT_OMNIVOX" = yes ]; then
+    mkdir -p "$OMNIVOX_DIR"
+    log "Choosing the OmniVox release"
+    # Latest by default, so rerunning this script also updates OmniVox. The
+    # checksum file comes from the same release: it catches a damaged download.
+    if [ -n "$OMNIVOX_VERSION" ]; then
+        echo "OmniVox $OMNIVOX_VERSION, as asked with --omnivox-version."
+    elif OMNIVOX_VERSION=$(latest_omnivox_version) && valid_version "$OMNIVOX_VERSION"; then
+        echo "Latest OmniVox release: $OMNIVOX_VERSION"
+    elif [ -n "$INSTALLED" ]; then
+        OMNIVOX_VERSION=${INSTALLED%% *}
+        warn "could not ask GitHub for the latest OmniVox release; keeping $OMNIVOX_VERSION."
+    else
+        OMNIVOX_VERSION=$OMNIVOX_FALLBACK
+        warn "could not ask GitHub for the latest OmniVox release; using $OMNIVOX_VERSION."
+    fi
+    if [ "$OMNIVOX_ROUTE" = source ]; then
+        WANT="$OMNIVOX_VERSION source"
+        ROUTE_TEXT="built from source"
+    else
+        WANT="$OMNIVOX_VERSION macos-$ARCH"
+        ROUTE_TEXT="prebuilt for $ARCH_NAME, checksum verified"
+    fi
+    if [ "$INSTALLED" = "$WANT" ] && [ -x "$PREFIX/servers/omnivox" ] &&
+       [ -f "$OMNIVOX_DIR/elisp/omnivox-voices.el" ]; then
+        echo "OmniVox $OMNIVOX_VERSION ($ROUTE_TEXT) is already installed; keeping it."
+    elif [ "$OMNIVOX_ROUTE" = source ]; then
+        build_omnivox_from_source "$OMNIVOX_VERSION"
+    else
+        install_prebuilt_omnivox "$OMNIVOX_VERSION"
+    fi
+    INSTALLED=$WANT
+
+    log "Registering OmniVox in $SERVERS_LIST"
+    register_omnivox
+    echo "Listed: omnivox, log-omnivox."
 elif [ -n "$INSTALLED" ]; then
     OMNIVOX_VERSION=${INSTALLED%% *}
-    warn "could not ask GitHub for the latest OmniVox release; keeping $OMNIVOX_VERSION."
-else
-    OMNIVOX_VERSION=$OMNIVOX_FALLBACK
-    warn "could not ask GitHub for the latest OmniVox release; using $OMNIVOX_VERSION."
+    case "$INSTALLED" in
+        *" source") ROUTE_TEXT="built from source" ;;
+        *)          ROUTE_TEXT="prebuilt for $ARCH_NAME, checksum verified" ;;
+    esac
 fi
-if [ "$OMNIVOX_ROUTE" = source ]; then
-    WANT="$OMNIVOX_VERSION source"
-    ROUTE_TEXT="built from source"
-else
-    WANT="$OMNIVOX_VERSION macos-$ARCH"
-    ROUTE_TEXT="prebuilt for $ARCH_NAME, checksum verified"
+HAVE_OMNIVOX=no
+if [ -x "$PREFIX/servers/omnivox" ] && [ -f "$OMNIVOX_DIR/elisp/omnivox-voices.el" ]; then
+    HAVE_OMNIVOX=yes
 fi
-if [ "$INSTALLED" = "$WANT" ] && [ -x "$PREFIX/servers/omnivox" ] &&
-   [ -f "$OMNIVOX_DIR/elisp/omnivox-voices.el" ]; then
-    echo "OmniVox $OMNIVOX_VERSION ($ROUTE_TEXT) is already installed; keeping it."
-elif [ "$OMNIVOX_ROUTE" = source ]; then
-    build_omnivox_from_source "$OMNIVOX_VERSION"
-else
-    install_prebuilt_omnivox "$OMNIVOX_VERSION"
+# The prebuilt OmniVox looks for espeak-ng's voice data in /opt/homebrew and
+# /usr/local only (a source build carries its own), so a Homebrew elsewhere
+# needs ESPEAK_NG_DATA, which OmniVox reads first.
+SET_ESPEAK_DATA=no
+case "$BREW_PREFIX" in
+    /opt/homebrew|/usr/local) ;;
+    *) if [ "$HAVE_OMNIVOX" = yes ] && [ -f "$BREW_PREFIX/share/espeak-ng-data/phontab" ]; then
+           SET_ESPEAK_DATA=yes
+       fi ;;
+esac
+
+if is_selected espeak; then
+    log "Setting up OmniVox's espeak-ng engine"
+    echo "Voice data: $BREW_PREFIX/share/espeak-ng-data, from Homebrew's espeak-ng."
+    if [ "$SET_ESPEAK_DATA" = yes ]; then
+        echo "OmniVox does not look in $BREW_PREFIX, so the launcher and the init file set ESPEAK_NG_DATA."
+    elif [ "$OMNIVOX_ROUTE" = source ]; then
+        echo "OmniVox built from source reads the copy of the data its build made."
+    else
+        echo "OmniVox finds the data there itself. OMNIVOX_ENGINE=espeak picks the engine."
+    fi
 fi
 
-log "Registering OmniVox in $SERVERS_LIST"
-register_omnivox
-echo "Listed: omnivox, log-omnivox."
+# --------------------------------------------------------------------------
+if is_selected swiftmac; then
+    log "Building swiftmac with Swift $SWIFT_VERSION (make swiftmac, a few minutes)"
+    echo "It fetches one Swift package, OggDecoder, from GitHub."
+    HINT="swiftmac needs Swift 5.9 or newer, and the internet for its OggDecoder \
+package. Update Xcode or its Command Line Tools, then rerun, or leave swiftmac \
+out of --speech."
+    logged "make swiftmac" make_in "$PREFIX" swiftmac
+    # emacspeak's swiftmac target reports a failed build only with an echo,
+    # so check that servers/swiftmac is the binary this build just made.
+    cmp -s "$PREFIX/servers/mac-swiftmac/.build/release/swiftmac" "$PREFIX/servers/swiftmac" ||
+        fail_with_log "make swiftmac"
+    echo "Built $PREFIX/servers/swiftmac"
+fi
 
+# --------------------------------------------------------------------------
+if is_selected tclespeak; then
+    export TCLLIBPATH="{$TCLX_DIR/lib}${TCLLIBPATH:+ $TCLLIBPATH}"
+    log "Checking TclX in Homebrew's Tcl 8.6"
+    if TCLX=$(tclx_version 2>>"$LOG"); then
+        echo "TclX $TCLX loads in $TCLSH; keeping it."
+    else
+        build_tclx
+        TCLX=$(tclx_version 2>>"$LOG") ||
+            die "TclX was built, but it does not load in $TCLSH. See $LOG"
+        echo "TclX $TCLX is installed in $TCLX_DIR"
+    fi
+
+    log "Building tclespeak.dylib, the espeak glue, against Homebrew's Tcl 8.6"
+    # The Makefile's macOS branch links Apple's Tcl framework, so name
+    # Homebrew's Tcl 8.6 and espeak-ng here instead.
+    HINT="Check that $TCL_FORMULA and espeak-ng are installed (brew list \
+$TCL_FORMULA espeak-ng), then rerun."
+    logged "building tclespeak.dylib" make_in "$PREFIX/servers/native-espeak" -B \
+        CXXFLAGS="-g -O2 -fPIC -DPIC -Wall -Wno-long-long -std=c++11 -I$TCL_INCLUDE -I$BREW_PREFIX/include" \
+        LIBS="-L$TCL_KEG/lib -ltcl8.6 -L$BREW_PREFIX/lib -lespeak-ng"
+    [ -f "$GLUE" ] || die "the build finished but $GLUE is missing"
+    echo "Built $GLUE"
+
+    log "Pointing the Tcl speech servers at $TCLSH"
+    point_tcl_servers
+    [ -n "$TCL_SERVERS" ] || die "no Tcl speech servers found in $PREFIX/servers"
+    echo "Changed:$TCL_SERVERS"
+fi
+HAVE_SWIFTMAC=no
+if [ -x "$PREFIX/servers/swiftmac" ]; then HAVE_SWIFTMAC=yes; fi
+HAVE_TCLESPEAK=no
+if [ -f "$GLUE" ] && [ -x "$TCLSH" ] && [ -f "$PREFIX/servers/espeak" ] &&
+   [ "$(head -n 1 "$PREFIX/servers/espeak")" = "#!$TCLSH" ]; then
+    HAVE_TCLESPEAK=yes
+fi
+# The Tcl espeak server's auditory icons are Ogg Vorbis files. SoX's play
+# reads them; macOS's afplay does not, but it at least runs without errors.
+ICON_PLAYER=/usr/bin/afplay
+if [ -x "$BREW_PREFIX/bin/play" ]; then ICON_PLAYER=$BREW_PREFIX/bin/play; fi
+if is_selected tclespeak; then
+    if [ "$ICON_PLAYER" = /usr/bin/afplay ]; then
+        echo "Auditory icons: SoX is missing, so the Tcl espeak server's icons are silent."
+    else
+        echo "Auditory icons: the Tcl espeak server plays them with $ICON_PLAYER"
+    fi
+fi
+
+# --------------------------------------------------------------------------
 log "Writing $INIT"
-cat >"$INIT" <<INIT
-;;; omnivox-init.el --- emacspeak with OmniVox speech  -*- lexical-binding: t; -*-
+{
+    cat <<INIT
+;;; emacspeak-init.el --- emacspeak with real speech on macOS  -*- lexical-binding: t; -*-
 ;; $MARKER, which rewrites it on every run.
 ;; Load it from your own init file, or copy these settings there.
 
-;; Emacspeak's Lisp, then OmniVox's voice module, which loads before emacspeak.
+;; Emacspeak's Lisp, and the speech server: DTK_PROGRAM when it is set,
+;; otherwise $DEFAULT_SERVER, the default chosen when this was installed.
 (add-to-list 'load-path "$PREFIX/lisp")
-(add-to-list 'load-path "$OMNIVOX_DIR/elisp")
-(require 'omnivox-voices)
+(setq dtk-program (or (getenv "DTK_PROGRAM") "$DEFAULT_SERVER"))
+INIT
+    if [ "$HAVE_OMNIVOX" = yes ]; then
+        cat <<INIT
 
+;; OmniVox's voice module loads before emacspeak, for the omnivox server.
+;; From another server, M-x omnivox switches to OmniVox.
+(add-to-list 'load-path "$OMNIVOX_DIR/elisp")
+(when (string-match-p "omnivox" dtk-program)
+  (require 'omnivox-voices))
+(autoload 'omnivox "omnivox-voices" "Switch emacspeak to the OmniVox server." t)
 ;; Optional: M-x customize-group RET omnivox RET lists every OmniVox setting.
 ;; (setq omnivox-voice-id "en-US:Samantha")
 ;; (setq omnivox-speech-rate 60)   ; 0 to 100, 50 is normal
+INIT
+        if [ "$FIRST" = espeak ]; then
+            cat <<'INIT'
+;; OmniVox speaks with its espeak-ng engine unless OMNIVOX_ENGINE is set;
+;; OMNIVOX_ENGINE=native picks the macOS system voices instead.
+(unless (getenv "OMNIVOX_ENGINE")
+  (setenv "OMNIVOX_ENGINE" "espeak"))
+INIT
+        fi
+        if [ "$SET_ESPEAK_DATA" = yes ]; then
+            cat <<INIT
+;; OmniVox's espeak-ng engine reads its voice data from Homebrew.
+(unless (getenv "ESPEAK_NG_DATA")
+  (setenv "ESPEAK_NG_DATA" "$BREW_PREFIX/share"))
+INIT
+        fi
+    fi
+    if [ "$HAVE_TCLESPEAK" = yes ]; then
+        cat <<INIT
 
-;; OmniVox's advice: keep macOS accessibility prompts from interrupting speech.
+;; The Tcl espeak server: Tcl finds TclX through TCLLIBPATH, and the
+;; server plays auditory icons with EMACSPEAK_PLAY.
+(let ((tclx "{$TCLX_DIR/lib}")
+      (old (getenv "TCLLIBPATH")))
+  (unless (and old (string-search tclx old))
+    (setenv "TCLLIBPATH" (if old (concat tclx " " old) tclx))))
+(unless (getenv "EMACSPEAK_PLAY")
+  (setenv "EMACSPEAK_PLAY" "$ICON_PLAYER"))
+INIT
+    fi
+    cat <<INIT
+
+;; Keep macOS accessibility prompts from interrupting speech.
 (when (eq system-type 'darwin)
   (setq mac-ignore-accessibility t))
-;; OmniVox plays the auditory icons itself, so its sound volume applies.
-(setq emacspeak-play-program nil)
+;; OmniVox and swiftmac play the auditory icons themselves, so their sound
+;; volume applies. The Tcl espeak server keeps emacspeak's own player.
+(when (string-match-p "omnivox\\\\|swiftmac" dtk-program)
+  (setq emacspeak-play-program nil))
 ;; Native compilation runs in the background; do not pop up its warnings.
 (setq native-comp-async-report-warnings-errors 'silent)
 
-(setq dtk-program (or (getenv "DTK_PROGRAM") "omnivox"))
 (load-file "$PREFIX/lisp/emacspeak-setup.el")
 INIT
+} >"$INIT"
 echo "Written."
+if [ -f "$OLD_INIT" ] && grep -q "$MARKER" "$OLD_INIT"; then
+    cat >"$OLD_INIT" <<OLD
+;;; omnivox-init.el --- loads emacspeak-init.el  -*- lexical-binding: t; -*-
+;; $MARKER, which rewrites it on every run.
+;; The settings moved to emacspeak-init.el. This file loads it, so an init
+;; file that loads omnivox-init.el keeps working. Better, load the new one:
+;; (load-file "$INIT")
+(load-file "$INIT")
+OLD
+    echo "The old init file now loads it: $OLD_INIT"
+fi
 
 log "Writing the launcher $LAUNCHER"
 [ -w "${LAUNCHER%/*}" ] ||
@@ -556,174 +1125,478 @@ log "Writing the launcher $LAUNCHER"
 if [ -L "$LAUNCHER" ] || { [ -e "$LAUNCHER" ] && ! grep -q "$MARKER" "$LAUNCHER"; }; then
     die "$LAUNCHER exists and was not written by this script. Move it away, then rerun."
 fi
-cat >"$LAUNCHER" <<LAUNCHER
+{
+    cat <<LAUNCHER
 #!/bin/sh
-# Console Emacs with emacspeak, speaking through OmniVox.
+# Console Emacs with emacspeak. The default speech server is $DEFAULT_SERVER.
 # $MARKER. DTK_PROGRAM picks the speech server.
 # -q skips your own init file, so emacspeak always starts the same way.
-export DTK_PROGRAM="\${DTK_PROGRAM:-omnivox}"
+export DTK_PROGRAM="\${DTK_PROGRAM:-$DEFAULT_SERVER}"
+LAUNCHER
+    if [ "$FIRST" = espeak ]; then
+        cat <<'LAUNCHER'
+# OmniVox speaks with its espeak-ng engine; OMNIVOX_ENGINE=native picks
+# the macOS system voices instead.
+export OMNIVOX_ENGINE="${OMNIVOX_ENGINE:-espeak}"
+LAUNCHER
+    fi
+    if [ "$SET_ESPEAK_DATA" = yes ]; then
+        cat <<LAUNCHER
+export ESPEAK_NG_DATA="\${ESPEAK_NG_DATA:-$BREW_PREFIX/share}"
+LAUNCHER
+    fi
+    if [ "$HAVE_TCLESPEAK" = yes ]; then
+        cat <<LAUNCHER
+# The Tcl espeak server finds TclX through TCLLIBPATH, and plays its
+# auditory icons with EMACSPEAK_PLAY.
+export TCLLIBPATH="{$TCLX_DIR/lib}\${TCLLIBPATH:+ \$TCLLIBPATH}"
+export EMACSPEAK_PLAY="\${EMACSPEAK_PLAY:-$ICON_PLAYER}"
+LAUNCHER
+    fi
+    cat <<LAUNCHER
 exec "$EMACS_BIN" -nw -q -l "$INIT" "\$@"
 LAUNCHER
+} >"$LAUNCHER"
 chmod 0755 "$LAUNCHER"
 echo "Launcher written."
 
 # --------------------------------------------------------------------------
-# Self-tests. Only the last one needs sound: it is skipped when OmniVox
-# finds no sound output device, or when the system voice gives no audio,
-# which happens in sessions without a logged-in user (test 3 then warns).
+# Self-tests, numbered across the chosen engines: each engine's own checks,
+# then the shared ones, then each server started the way Emacs starts it.
+# Only the OmniVox server tests need sound: each is skipped when OmniVox
+# finds no sound output device, or when the voice gives no audio, which
+# happens in sessions without a logged-in user (its check then warns).
 OMNIVOX=$PREFIX/servers/omnivox
-PASSED=""
+SWIFTMAC=$PREFIX/servers/swiftmac
+TCL_SERVER=$PREFIX/servers/espeak
+TEST_N=0
+TEST_TOTAL=0
+TEST_ENGINE=""
 PASS_COUNT=0
+PASSED=""
+WARN_COUNT=0
 WARNED=""
+SKIP_COUNT=0
 SKIPPED=""
-SKIP_WHY=""
-passed() { # $1 = test number, $2 = what passed
-    PASSED="${PASSED:+$PASSED, }$1"
+ENGINES_PASSED=""
+ENGINES_WARNED=""
+count_tests() {
+    local n=3   # shared: Emacs, the init file, the servers and launcher
+    if is_selected omnivox; then n=$((n + 4)); fi
+    if is_selected espeak; then
+        n=$((n + 3))
+        if ! is_selected omnivox; then n=$((n + 1)); fi
+    fi
+    if is_selected swiftmac; then n=$((n + 2)); fi
+    if is_selected tclespeak; then n=$((n + 4)); fi
+    echo "$n"
+}
+begin_test() { # $1 = the engine it tests, or "" for a shared test; $2 = what
+    TEST_N=$((TEST_N + 1))
+    TEST_ENGINE=$1
+    log "Self-test $TEST_N of $TEST_TOTAL: $2"
+}
+passed() { # $1 = what passed
+    PASSED="${PASSED:+$PASSED, }$TEST_N"
     PASS_COUNT=$((PASS_COUNT + 1))
-    echo "Pass: $2"
+    ENGINES_PASSED="$ENGINES_PASSED $TEST_ENGINE"
+    echo "Pass: $1"
+}
+warned() { # $1 = the warning, as the summary gives it
+    WARNED="${WARNED:+$WARNED; }test $TEST_N, $1"
+    WARN_COUNT=$((WARN_COUNT + 1))
+    ENGINES_WARNED="$ENGINES_WARNED $TEST_ENGINE"
+}
+skipped() { # $1 = why
+    SKIPPED="${SKIPPED:+$SKIPPED; }test $TEST_N, $1"
+    SKIP_COUNT=$((SKIP_COUNT + 1))
+    echo "Skipped: $1."
+}
+engine_status() { # $1 = engine: Pass, Warning or Skipped
+    if [ "$RUN_TESTS" = no ]; then echo "Skipped (--no-test)"; return 0; fi
+    case " $ENGINES_WARNED " in *" $1 "*) echo Warning; return 0 ;; esac
+    case " $ENGINES_PASSED " in *" $1 "*) echo Pass; return 0 ;; esac
+    echo Skipped
+}
+test_omnivox_version() { # $1 = the engine this counts for
+    begin_test "$1" "OmniVox reports its version"
+    OUT=$(limited 30 "" "$OMNIVOX" --version 2>>"$LOG") ||
+        die "Self-test $TEST_N failed: $OMNIVOX --version did not run. Rerun with \
+--omnivox-source to build it here. See $LOG"
+    case "$OUT" in
+        "omnivox "*) passed "$OUT." ;;
+        *) die "Self-test $TEST_N failed: $OMNIVOX --version printed: $OUT. Rerun \
+with --omnivox-source to build it here." ;;
+    esac
 }
 # Speech synthesis needs your logged-in session on the Mac.
 SPEECH_FIX="If you ran this over ssh, run it in Terminal on the Mac itself."
-LOAD_CHECK='(kill-emacs (if (and (featurep (quote emacspeak))
-                                 (featurep (quote omnivox-voices))
-                                 (file-executable-p
-                                  (expand-file-name "omnivox" emacspeak-servers-directory)))
-                            0 1))'
+# Emacs loads the init file with DTK_PROGRAM set to a server, and checks
+# that emacspeak loaded and finds that server. $1 = extra checks.
+load_check() {
+    printf '%s' "(kill-emacs (if (and (featurep (quote emacspeak))
+                                  (file-executable-p
+                                   (expand-file-name dtk-program emacspeak-servers-directory))
+                                  $1)
+                             0 1))"
+}
+
 if [ "$RUN_TESTS" = yes ]; then
-    log "Self-test 1 of 7: OmniVox reports its version"
-    OUT=$(limited 30 "" "$OMNIVOX" --version 2>>"$LOG") ||
-        die "Self-test 1 failed: $OMNIVOX --version did not run. Rerun with \
---omnivox-source to build it here. See $LOG"
-    case "$OUT" in
-        "omnivox "*) passed 1 "$OUT." ;;
-        *) die "Self-test 1 failed: $OMNIVOX --version printed: $OUT. Rerun \
-with --omnivox-source to build it here." ;;
-    esac
-
-    log "Self-test 2 of 7: OmniVox lists the system voices"
-    OUT=$(limited 60 "" "$OMNIVOX" --list-voices 2>>"$LOG") ||
-        die "Self-test 2 failed: $OMNIVOX --list-voices did not finish. $SPEECH_FIX See $LOG"
-    printf '%s\n' "$OUT" >>"$LOG"
-    VOICES=$(sed -n 's/^Found \([0-9][0-9]*\) voices.*/\1/p' <<<"$OUT")
-    [ "${VOICES:-0}" -ge 1 ] ||
-        die "Self-test 2 failed: OmniVox found no voices. Check System Settings, \
-Accessibility, Spoken Content."
-    passed 2 "$VOICES voices."
-
-    log "Self-test 3 of 7: OmniVox's own check synthesizes speech"
-    echo "With a sound device, you may hear a tone and: Omnivox is ready."
-    OUT=$(limited 120 "" "$OMNIVOX" --check 2>>"$LOG") ||
-        die "Self-test 3 failed: $OMNIVOX --check did not run to the end. \
-$SPEECH_FIX See $LOG"
-    printf '%s\n' "$OUT" >>"$LOG"
-    # The status line under [synthesis], such as "OK - 9000 samples, ..."
-    # or "WARNING - synthesized empty buffer".
-    SYNTH=$(awk '/^\[synthesis\]/ { getline; sub(/^[[:space:]]*Status:[[:space:]]*/, "");
-                                     print; exit }' <<<"$OUT")
+    TEST_TOTAL=$(count_tests)
+    # The tests set these themselves; values from your shell would change them.
+    unset OMNIVOX_ENGINE OMNIVOX_AUDIO_TARGET SWIFTMAC_AUDIO_TARGET
+    if [ "$SET_ESPEAK_DATA" = yes ] && [ -z "${ESPEAK_NG_DATA:-}" ]; then
+        export ESPEAK_NG_DATA=$BREW_PREFIX/share
+    fi
+    if is_selected tclespeak; then export EMACSPEAK_PLAY="${EMACSPEAK_PLAY:-$ICON_PLAYER}"; fi
     SOUND=no
-    if grep -q 'Audio device: OK' <<<"$OUT"; then SOUND=yes; fi
-    case "$SYNTH" in
-        OK*)
-            if [ "$SOUND" = yes ]; then
-                passed 3 "speech synthesized, and a sound output device was found."
-            else
-                passed 3 "speech synthesized. No sound output device was found."
-                SKIP_WHY="no sound output device was found"
-            fi ;;
-        *)
-            SOUND=no
-            WARNED="test 3, the system voice produced no audio"
-            SKIP_WHY="the system voice produced no audio in test 3"
-            warn "the system voice produced no audio."
-            echo "OmniVox said: ${SYNTH:-no synthesis status}"
-            echo "This happens in sessions without a logged-in user."
-            echo "On your Mac, run the script again in Terminal,"
-            echo "or try M-x omnivox-select-voice in emacspeak." ;;
-    esac
+    SKIP_WHY=""
+    ESPEAK_SOUND=no
+    ESPEAK_SKIP_WHY=""
 
-    log "Self-test 4 of 7: Emacs is 29.1 or newer"
-    emacs_new_enough "$EMACS_BIN" ||
-        die "Self-test 4 failed: Emacs $EMACS_VERSION is too old. Install a \
-newer one: brew install $EMACS_FORMULA"
-    passed 4 "Emacs $EMACS_VERSION."
+    if is_selected omnivox; then
+        test_omnivox_version omnivox
 
-    log "Self-test 5 of 7: Emacs loads the init file and finds OmniVox (no speech)"
-    "$EMACS_BIN" -Q --batch -l "$INIT" --eval "$LOAD_CHECK" >>"$LOG" 2>&1 ||
-        die "Self-test 5 failed: Emacs could not load $INIT, or emacspeak \
-does not find $OMNIVOX. Rerun the script to rebuild both. See $LOG"
-    passed 5 "emacspeak and omnivox-voices load, and emacspeak finds the server."
+        begin_test omnivox "OmniVox lists the system voices"
+        OUT=$(limited 60 "" "$OMNIVOX" --list-voices 2>>"$LOG") ||
+            die "Self-test $TEST_N failed: $OMNIVOX --list-voices did not finish. $SPEECH_FIX See $LOG"
+        printf '%s\n' "$OUT" >>"$LOG"
+        VOICES=$(voice_count "$OUT")
+        [ "${VOICES:-0}" -ge 1 ] ||
+            die "Self-test $TEST_N failed: OmniVox found no voices. Check System \
+Settings, Accessibility, Spoken Content."
+        passed "$VOICES voices."
 
-    log "Self-test 6 of 7: OmniVox is registered and the launcher is in place"
-    for name in omnivox log-omnivox; do
-        grep -qx "$name" "$SERVERS_LIST" ||
-            die "Self-test 6 failed: $SERVERS_LIST does not list $name. Rerun the script."
-    done
-    [ -x "$PREFIX/servers/log-omnivox" ] ||
-        die "Self-test 6 failed: $PREFIX/servers/log-omnivox is missing. Rerun the script."
-    [ -x "$LAUNCHER" ] || die "Self-test 6 failed: $LAUNCHER is missing. Rerun the script."
-    passed 6 "both names are listed, and the launcher is executable."
+        begin_test omnivox "OmniVox's own check synthesizes speech"
+        echo "With a sound device, you may hear a tone and: Omnivox is ready."
+        OUT=$(limited 120 "" "$OMNIVOX" --check 2>>"$LOG") ||
+            die "Self-test $TEST_N failed: $OMNIVOX --check did not run to the end. \
+$SPEECH_FIX See $LOG"
+        printf '%s\n' "$OUT" >>"$LOG"
+        SYNTH=$(synth_status "$OUT")
+        if grep -q 'Audio device: OK' <<<"$OUT"; then SOUND=yes; fi
+        case "$SYNTH" in
+            OK*)
+                if [ "$SOUND" = yes ]; then
+                    passed "speech synthesized, and a sound output device was found."
+                else
+                    passed "speech synthesized. No sound output device was found."
+                    SKIP_WHY="no sound output device was found"
+                fi ;;
+            *)
+                SOUND=no
+                warned "the system voice produced no audio"
+                SKIP_WHY="the system voice produced no audio in test $TEST_N"
+                warn "the system voice produced no audio."
+                echo "OmniVox said: ${SYNTH:-no synthesis status}"
+                echo "This happens in sessions without a logged-in user."
+                echo "On your Mac, run the script again in Terminal,"
+                echo "or try M-x omnivox-select-voice in emacspeak." ;;
+        esac
+    fi
 
-    log "Self-test 7 of 7: the OmniVox server starts the way Emacs starts it"
-    if [ "$SOUND" = yes ]; then
-        echo "You should hear: Omnivox version $OMNIVOX_VERSION."
-        limited 60 version "$OMNIVOX" >>"$LOG" 2>&1 ||
-            die "Self-test 7 failed: the server did not start or exit cleanly. \
-Check the output device in System Settings, Sound, then rerun. See $LOG"
-        passed 7 "the server spoke its version and exited cleanly."
-    else
-        SKIPPED="test 7, $SKIP_WHY"
-        echo "Skipped: $SKIP_WHY."
-        echo "The server needs a working voice and a sound output device."
-        if [ -z "$WARNED" ]; then
-            echo "Connect speakers or headphones, then rerun."
+    if is_selected espeak; then
+        is_selected omnivox || test_omnivox_version espeak
+
+        begin_test espeak "OmniVox's espeak-ng engine finds its voices"
+        OUT=$(limited 60 "" "$OMNIVOX" --engine espeak --list-voices 2>>"$LOG") ||
+            die "Self-test $TEST_N failed: OmniVox's espeak-ng engine did not \
+start; its voice data may be missing. Reinstall it: brew reinstall espeak-ng, \
+then rerun. See $LOG"
+        printf '%s\n' "$OUT" >>"$LOG"
+        VOICES=$(voice_count "$OUT")
+        [ "${VOICES:-0}" -ge 1 ] ||
+            die "Self-test $TEST_N failed: OmniVox's espeak-ng engine found no \
+voices. Reinstall espeak-ng: brew reinstall espeak-ng, then rerun."
+        passed "$VOICES espeak-ng voices."
+
+        begin_test espeak "OmniVox's espeak-ng engine synthesizes speech"
+        echo "With a sound device, you may hear a tone and, in an espeak-ng voice: Omnivox is ready."
+        OUT=$(limited 120 "" "$OMNIVOX" --engine espeak --check 2>>"$LOG") ||
+            die "Self-test $TEST_N failed: $OMNIVOX --engine espeak --check did \
+not run to the end. See $LOG"
+        printf '%s\n' "$OUT" >>"$LOG"
+        SYNTH=$(synth_status "$OUT")
+        if grep -q 'Audio device: OK' <<<"$OUT"; then ESPEAK_SOUND=yes; fi
+        case "$SYNTH" in
+            OK*)
+                if [ "$ESPEAK_SOUND" = yes ]; then
+                    passed "espeak-ng synthesized speech, and a sound output device was found."
+                else
+                    passed "espeak-ng synthesized speech. No sound output device was found."
+                    ESPEAK_SKIP_WHY="no sound output device was found"
+                fi ;;
+            *)
+                ESPEAK_SOUND=no
+                warned "espeak-ng produced no audio"
+                ESPEAK_SKIP_WHY="espeak-ng produced no audio in test $TEST_N"
+                warn "espeak-ng produced no audio."
+                echo "OmniVox said: ${SYNTH:-no synthesis status}"
+                echo "Reinstall espeak-ng (brew reinstall espeak-ng), then rerun." ;;
+        esac
+    fi
+
+    if is_selected swiftmac; then
+        begin_test swiftmac "swiftmac is built, with its two frameworks beside it"
+        [ -x "$SWIFTMAC" ] ||
+            die "Self-test $TEST_N failed: $SWIFTMAC is missing. Rerun the script to build it."
+        if [ -d "$PREFIX/servers/ogg.framework" ] && [ -d "$PREFIX/servers/vorbis.framework" ]; then
+            passed "swiftmac, ogg.framework and vorbis.framework are in $PREFIX/servers."
+        else
+            warned "ogg.framework or vorbis.framework is missing beside swiftmac"
+            warn "ogg.framework or vorbis.framework is missing from $PREFIX/servers, \
+so swiftmac may not start. Rerun the script to rebuild it."
         fi
     fi
-    TESTS="$PASS_COUNT of 7 passed"
-    if [ -n "$WARNED" ]; then TESTS="$TESTS, 1 warning"; fi
-    if [ -n "$SKIPPED" ]; then TESTS="$TESTS, 1 skipped"; fi
-    if [ "$PASS_COUNT" -eq 7 ]; then TESTS="all 7 passed"; fi
+
+    if is_selected tclespeak; then
+        begin_test tclespeak "TclX loads in $TCLSH"
+        TCLX=$(tclx_version 2>>"$LOG") ||
+            die "Self-test $TEST_N failed: TclX does not load in $TCLSH. Rerun the \
+script to rebuild it. See $LOG"
+        passed "TclX $TCLX."
+
+        begin_test tclespeak "tclespeak.dylib loads in $TCLSH and provides say"
+        INFO=$(espeak_glue_check "$GLUE" 2>>"$LOG") ||
+            die "Self-test $TEST_N failed: $GLUE does not load. See $LOG"
+        passed "$INFO."
+
+        begin_test tclespeak "SoX reads emacspeak's auditory icons (no sound)"
+        if [ ! -x "$BREW_PREFIX/bin/sox" ]; then
+            warned "SoX is missing, so the Tcl espeak server's auditory icons are silent"
+            warn "SoX is not installed, so the Tcl espeak server cannot play auditory icons."
+            echo "To add them: brew install sox, then rerun."
+        elif "$BREW_PREFIX/bin/sox" "$PREFIX/sounds/chimes/button.ogg" -n >>"$LOG" 2>&1; then
+            passed "SoX decodes the Ogg Vorbis icons, so the server can play them."
+        else
+            warned "SoX could not read the auditory icons"
+            warn "SoX could not decode $PREFIX/sounds/chimes/button.ogg, so the Tcl \
+espeak server's auditory icons may be silent. See $LOG"
+        fi
+    fi
+
+    begin_test "" "Emacs is 29.1 or newer"
+    emacs_new_enough "$EMACS_BIN" ||
+        die "Self-test $TEST_N failed: Emacs $EMACS_VERSION is too old. Install a \
+newer one: brew install $EMACS_FORMULA"
+    passed "Emacs $EMACS_VERSION."
+
+    begin_test "" "Emacs loads the init file and finds each chosen server (no speech)"
+    for server in $(chosen_servers); do
+        case "$server" in
+            omnivox)
+                extra="(featurep (quote omnivox-voices))"
+                if [ "$FIRST" = espeak ]; then
+                    extra="$extra (equal (getenv \"OMNIVOX_ENGINE\") \"espeak\")"
+                fi ;;
+            espeak)
+                extra="(string-search \"$TCLX_DIR/lib\" (or (getenv \"TCLLIBPATH\") \"\"))
+                       (getenv \"EMACSPEAK_PLAY\")" ;;
+            *) extra="t" ;;
+        esac
+        # Without the variables the init file sets, to see that it sets them.
+        env -u TCLLIBPATH -u EMACSPEAK_PLAY DTK_PROGRAM="$server" \
+            "$EMACS_BIN" -Q --batch -l "$INIT" --eval "$(load_check "$extra")" >>"$LOG" 2>&1 ||
+            die "Self-test $TEST_N failed: Emacs could not load $INIT with the \
+$server server, or emacspeak does not find $PREFIX/servers/$server. Rerun the \
+script to rebuild both. See $LOG"
+    done
+    if is_selected omnivox || is_selected espeak; then
+        passed "emacspeak and omnivox-voices load, and emacspeak finds the servers: $(commas "$(chosen_servers)")."
+    else
+        passed "emacspeak loads, and finds the servers: $(commas "$(chosen_servers)")."
+    fi
+
+    begin_test "" "the servers are registered and the launcher is in place"
+    names=""
+    if [ "$WANT_OMNIVOX" = yes ]; then names="omnivox log-omnivox"; fi
+    if is_selected swiftmac; then names="$names swiftmac"; fi
+    if is_selected tclespeak; then names="$names espeak"; fi
+    for name in $names; do
+        grep -qx "$name" "$SERVERS_LIST" ||
+            die "Self-test $TEST_N failed: $SERVERS_LIST does not list $name. Rerun the script."
+    done
+    if [ "$WANT_OMNIVOX" = yes ]; then
+        [ -x "$PREFIX/servers/log-omnivox" ] ||
+            die "Self-test $TEST_N failed: $PREFIX/servers/log-omnivox is missing. Rerun the script."
+    fi
+    [ -x "$LAUNCHER" ] || die "Self-test $TEST_N failed: $LAUNCHER is missing. Rerun the script."
+    grep -q "DTK_PROGRAM:-$DEFAULT_SERVER}" "$LAUNCHER" ||
+        die "Self-test $TEST_N failed: $LAUNCHER does not default to $DEFAULT_SERVER. Rerun the script."
+    passed "$SERVERS_LIST lists every chosen server, and the launcher defaults to $DEFAULT_SERVER."
+
+    if is_selected omnivox; then
+        begin_test omnivox "the OmniVox server starts the way Emacs starts it"
+        if [ "$SOUND" = yes ]; then
+            echo "You should hear: Omnivox version $OMNIVOX_VERSION."
+            limited 60 version "$OMNIVOX" >>"$LOG" 2>&1 ||
+                die "Self-test $TEST_N failed: the server did not start or exit \
+cleanly. Check the output device in System Settings, Sound, then rerun. See $LOG"
+            passed "the server spoke its version and exited cleanly."
+        else
+            skipped "$SKIP_WHY"
+            echo "The server needs a working voice and a sound output device."
+            if [ -z "$WARNED" ]; then
+                echo "Connect speakers or headphones, then rerun."
+            fi
+        fi
+    fi
+
+    if is_selected espeak; then
+        begin_test espeak "the OmniVox server starts with its espeak-ng engine"
+        if [ "$ESPEAK_SOUND" = yes ]; then
+            echo "You should hear, in an espeak-ng voice: Omnivox version $OMNIVOX_VERSION."
+            limited 60 version env OMNIVOX_ENGINE=espeak "$OMNIVOX" >>"$LOG" 2>&1 ||
+                die "Self-test $TEST_N failed: the server did not start or exit \
+cleanly with OMNIVOX_ENGINE=espeak. Check the output device in System Settings, \
+Sound, then rerun. See $LOG"
+            passed "the server spoke its version with espeak-ng and exited cleanly."
+        else
+            skipped "$ESPEAK_SKIP_WHY"
+            echo "The server needs a sound output device."
+        fi
+    fi
+
+    if is_selected swiftmac; then
+        begin_test swiftmac "the swiftmac server starts the way Emacs starts it"
+        echo "With a sound device, you may hear: swiftmac, and its version."
+        limited 60 version "$SWIFTMAC" >>"$LOG" 2>&1 ||
+            die "Self-test $TEST_N failed: $SWIFTMAC did not start, or did not \
+exit at the end of its input. $SPEECH_FIX See $LOG"
+        passed "the server started, read its input and exited cleanly."
+    fi
+
+    if is_selected tclespeak; then
+        begin_test tclespeak "the Tcl espeak server starts the way Emacs starts it"
+        echo "With a sound device, you may hear: eSpeak, and its version."
+        rc=0
+        OUT=$(limited 60 "" "$TCL_SERVER" 2>&1) || rc=$?
+        printf '%s\n' "$OUT" >>"$LOG"
+        if [ "$rc" -eq 0 ]; then
+            passed "the server started and exited cleanly at the end of its input."
+        elif grep -q 'Could not synthesize' <<<"$OUT"; then
+            warned "the Tcl espeak server could not play speech"
+            warn "the Tcl espeak server started, but espeak-ng could not play speech."
+            echo "This happens without a sound output device. Connect one, then rerun."
+        else
+            die "Self-test $TEST_N failed: $TCL_SERVER did not start, or did not \
+exit at the end of its input. See $LOG"
+        fi
+    fi
+
+    TESTS="$PASS_COUNT of $TEST_TOTAL passed"
+    if [ "$WARN_COUNT" -eq 1 ]; then TESTS="$TESTS, 1 warning"; fi
+    if [ "$WARN_COUNT" -gt 1 ]; then TESTS="$TESTS, $WARN_COUNT warnings"; fi
+    if [ "$SKIP_COUNT" -gt 0 ]; then TESTS="$TESTS, $SKIP_COUNT skipped"; fi
+    if [ "$PASS_COUNT" -eq "$TEST_TOTAL" ]; then TESTS="all $TEST_TOTAL passed"; fi
 else
     TESTS="skipped (--no-test)"
 fi
+
+# The record of this choice, which the next run without --speech reuses.
+for e in $SELECTED; do printf '%s\n' "$e"; done >"$RECORD"
 
 # --------------------------------------------------------------------------
 log "Done: emacspeak is installed"
 echo "Self-tests: $TESTS"
 if [ "$RUN_TESTS" = yes ]; then
-    echo "Passed: tests $PASSED"
+    if [ -n "$PASSED" ]; then echo "Passed: tests $PASSED"; fi
     if [ -n "$WARNED" ]; then echo "Warning: $WARNED"; fi
     if [ -n "$SKIPPED" ]; then echo "Skipped: $SKIPPED"; fi
 fi
+echo "Speech engines, in order of preference:"
+for e in $SELECTED; do
+    echo "  $e: $(engine_status "$e"). Server: $(engine_server_text "$e")."
+done
+EARLIER=""
+if [ "$HAVE_OMNIVOX" = yes ] && [ "$WANT_OMNIVOX" = no ]; then EARLIER="OmniVox"; fi
+if [ "$HAVE_SWIFTMAC" = yes ] && ! is_selected swiftmac; then
+    EARLIER="${EARLIER:+$EARLIER, }swiftmac"
+fi
+if [ "$HAVE_TCLESPEAK" = yes ] && ! is_selected tclespeak; then
+    EARLIER="${EARLIER:+$EARLIER, }the Tcl espeak server"
+fi
+if [ -n "$EARLIER" ]; then
+    echo "Still installed from an earlier run, not updated: $EARLIER."
+fi
+SERVERS=""
+if [ "$HAVE_OMNIVOX" = yes ]; then SERVERS="omnivox"; fi
+if [ "$HAVE_SWIFTMAC" = yes ]; then SERVERS="${SERVERS:+$SERVERS, }swiftmac"; fi
+if [ "$HAVE_TCLESPEAK" = yes ]; then SERVERS="${SERVERS:+$SERVERS, }espeak"; fi
+case "$FIRST" in
+    omnivox)   LAUNCHER_SETS="DTK_PROGRAM=omnivox, which picks the OmniVox server." ;;
+    espeak)    LAUNCHER_SETS="DTK_PROGRAM=omnivox and OMNIVOX_ENGINE=espeak, which pick OmniVox's espeak-ng engine." ;;
+    swiftmac)  LAUNCHER_SETS="DTK_PROGRAM=swiftmac, which picks the swiftmac server." ;;
+    tclespeak) LAUNCHER_SETS="DTK_PROGRAM=espeak, which picks emacspeak's Tcl espeak server." ;;
+esac
 if [ "$EMACS_ROUTE" = plus ]; then
     EMACS_NOTE="Emacs.app is in $BREW_PREFIX/opt/$EMACS_PLUS_FORMULA; the launcher runs Emacs in the terminal."
 else
     EMACS_NOTE="For Emacs.app as well, rerun with --emacs-plus."
 fi
+echo "Emacspeak is in $PREFIX"
+if [ "$HAVE_OMNIVOX" = yes ]; then
+    echo "OmniVox: $OMNIVOX_VERSION, $ROUTE_TEXT, in $PREFIX/servers"
+fi
+if is_selected swiftmac; then
+    echo "swiftmac: built with Swift $SWIFT_VERSION, in $PREFIX/servers"
+fi
+if [ "$HAVE_TCLESPEAK" = yes ]; then
+    echo "Tcl espeak server: runs on $TCLSH, with TclX in $TCLX_DIR"
+fi
 cat <<DONE
-Emacspeak is in $PREFIX
-Speech server: OmniVox $OMNIVOX_VERSION, $ROUTE_TEXT
-OmniVox is in $PREFIX/servers
 Emacs $EMACS_VERSION: $EMACS_BIN
 $EMACS_NOTE
 Launcher: $LAUNCHER
+Init file: $INIT
+Engines recorded in: $RECORD
 Build log: $LOG
 
 To start it, run this in Terminal:
   emacspeak
 
 The launcher starts console Emacs without your own init file (-q),
-and sets DTK_PROGRAM=omnivox, which picks the OmniVox server.
+and sets $LAUNCHER_SETS
+Servers installed: $SERVERS.
+To start with another server: DTK_PROGRAM=<server> emacspeak
+Inside Emacs, M-x dtk-select-server switches to another server.
+DONE
+if is_selected omnivox && is_selected espeak; then
+    cat <<'DONE'
+OmniVox has two engines, and OMNIVOX_ENGINE picks one at start:
+  OMNIVOX_ENGINE=espeak emacspeak, for espeak-ng
+  OMNIVOX_ENGINE=native emacspeak, for the macOS system voices
+Inside Emacs: M-x setenv RET OMNIVOX_ENGINE RET espeak RET,
+then M-x dtk-select-server RET omnivox RET.
+DONE
+fi
+cat <<DONE
+
 To load emacspeak from your own Emacs init file instead, put this
 line at the very top of ~/.emacs or ~/.emacs.d/init.el:
   (load-file "$INIT")
 
 If VoiceOver is on, you hear both it and emacspeak.
 Command-F5 turns VoiceOver off and on.
-To choose a voice in Emacs: M-x omnivox-select-voice
-Known OmniVox issue: text after two semicolons may not be spoken.
-
-To update emacspeak and OmniVox later, run this script again.
 DONE
+if [ "$HAVE_OMNIVOX" = yes ]; then
+    echo "To choose an OmniVox voice in Emacs: M-x omnivox-select-voice"
+    echo "From another server, M-x omnivox switches to OmniVox."
+    echo "Known OmniVox issue: text after two semicolons may not be spoken."
+fi
+if [ "$HAVE_TCLESPEAK" = yes ]; then
+    echo "Tones: not available with the Tcl espeak server on macOS;"
+    echo "its library looks for SoX only in /usr/bin."
+    if [ "$ICON_PLAYER" = /usr/bin/afplay ]; then
+        echo "Its auditory icons need SoX: brew install sox, then rerun."
+    else
+        echo "Its auditory icons play with SoX: $ICON_PLAYER"
+    fi
+    echo "Homebrew marks $TCL_FORMULA deprecated and plans to disable it"
+    echo "on January 1, 2028; the Tcl espeak server needs it."
+fi
+echo
+echo "To update emacspeak and the speech engines later, run this script again."
 if [ "$BREW_ON_PATH" = no ]; then
     printf '%s\n' "" \
         "Homebrew is not on your PATH yet, so the emacspeak command is not found." \

@@ -3,9 +3,10 @@
 # nothing here runs on a local machine.
 #
 # Runners have no speakers and no logged-in user, so the system voice gives
-# no audio there: self-test 3 reports a warning and self-test 7 is skipped,
-# and the job still passes. Each job uploads the installer's build log,
-# which holds OmniVox's --list-voices and --check reports, as an artifact.
+# no audio there: OmniVox's own check reports a warning and its server test
+# is skipped, and the job still passes. Each job uploads the installer's
+# build log, which holds OmniVox's --list-voices and --check reports, as an
+# artifact.
 name: macOS installer
 
 on:
@@ -32,6 +33,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # options: the first run. rerun: the second run, the update path.
+        # An empty rerun leaves out --speech, so the second run reuses the
+        # engines the first one recorded.
         include:
           # The first three use the default Emacs route: the installer
           # itself installs Homebrew's emacs formula. In the first run it
@@ -40,23 +44,42 @@ jobs:
           - name: Apple silicon, prebuilt OmniVox
             os: macos-15
             options: ""
+            rerun: ""
             timeout: 60
           # OmniVox cross-compiles its Intel binary and never runs it in its
           # own CI, so this job is its only real run.
           - name: Intel, prebuilt OmniVox
             os: macos-15-intel
             options: ""
+            rerun: ""
             timeout: 90
           - name: Apple silicon, OmniVox from source
             os: macos-15
             options: --omnivox-source
+            rerun: --omnivox-source
             timeout: 60
           # The emacs-plus route: tap, whole-tap trust, and a source build of
           # emacs-plus@30, so it gets a longer limit.
           - name: Apple silicon, emacs-plus
             os: macos-15
             options: --emacs-plus
+            rerun: --emacs-plus
             timeout: 180
+          # Every engine: OmniVox, its espeak-ng engine, swiftmac (runners
+          # have Xcode, so Swift is there) and the Tcl espeak server. Both
+          # runs build swiftmac; the second keeps TclX.
+          - name: Apple silicon, every speech engine
+            os: macos-15
+            options: --speech all
+            rerun: ""
+            timeout: 120
+          # The heavy route on Intel: tcl-tk@8, TclX from source, and sox,
+          # which Homebrew may compile there, with no OmniVox at all.
+          - name: Intel, Tcl espeak server
+            os: macos-15-intel
+            options: --speech tclespeak
+            rerun: ""
+            timeout: 150
     steps:
       - name: Check out the repository
         uses: actions/checkout@v7
@@ -64,11 +87,17 @@ jobs:
       - name: Check the syntax with the bash that macOS ships
         run: /bin/bash -n scripts/install-emacspeak-macos.sh
 
+      - name: List the speech engines
+        run: /bin/bash scripts/install-emacspeak-macos.sh --speech list
+
       - name: Run the installer
         run: /bin/bash scripts/install-emacspeak-macos.sh ${{ matrix.options }}
 
       - name: Run the installer again, the update path
-        run: /bin/bash scripts/install-emacspeak-macos.sh ${{ matrix.options }}
+        run: /bin/bash scripts/install-emacspeak-macos.sh ${{ matrix.rerun }}
+
+      - name: Show the recorded speech engines
+        run: cat "$HOME/.emacspeak/speech-engines"
 
       - name: Upload the build log
         if: always()
